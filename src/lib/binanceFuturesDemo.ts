@@ -19,6 +19,16 @@ export type {
 /** Binance USD-M Futures Demo REST (ex-testnet). */
 const BASE = "https://demo-fapi.binance.com";
 
+/**
+ * true si l'exécution démo est activée ET que les identifiants Binance
+ * démo sont configurés. Utilisé par commands.ts, demoExecutor.ts et le
+ * cron analyze.
+ */
+export function demoEnabled(): boolean {
+  const env = getEnv();
+  return env.demoExecution && Boolean(env.binanceDemoKey && env.binanceDemoSecret);
+}
+
 type Filters = {
   stepSize: number;
   tickSize: number;
@@ -151,14 +161,6 @@ export async function getDemoAccount(): Promise<DemoAccount> {
   };
 }
 
-export type DemoPosition = {
-  symbol: string;
-  positionAmt: number;
-  entryPrice: number;
-  unrealizedProfit: number;
-  leverage: number;
-};
-
 export async function getDemoPositions(): Promise<DemoPosition[]> {
   const rows = await signedRequest<
     {
@@ -180,25 +182,6 @@ export async function getDemoPositions(): Promise<DemoPosition[]> {
     }))
     .filter((r) => Math.abs(r.positionAmt) > 0);
 }
-
-export type PlaceDemoInput = {
-  symbol: string;
-  direction: "LONG" | "SHORT";
-  stopLoss: number;
-  takeProfit: number;
-  notionalUsdt?: number;
-  leverage?: number;
-};
-
-export type PlaceDemoResult = {
-  symbol: string;
-  side: "BUY" | "SELL";
-  qty: number;
-  entryOrderId: string;
-  entryPrice: number;
-  slOrderId?: string;
-  tpOrderId?: string;
-};
 
 export async function placeDemoTrade(
   input: PlaceDemoInput

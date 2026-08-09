@@ -16,7 +16,8 @@
     "@vercel/functions": "^3.7.6",
     "next": "^16.2.12",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "undici": "^6.28.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
