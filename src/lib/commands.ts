@@ -12,7 +12,7 @@ import { publishAnalysis, sendMessage } from "./telegram";
 import { resolveSignal } from "./tracker";
 import { runAllAnalyses } from "./analysis";
 import { polishAnalysis } from "./ai";
-import { demoEnabled } from "./binanceFuturesDemo";
+import { demoEnabled } from "./demo";
 import { demoStatusText, executeDemoForAnalysis } from "./demoExecutor";
 
 type TgUser = { id: number; username?: string };
@@ -48,14 +48,14 @@ async function runForcedAnalyze(chatId: number): Promise<void> {
         skipReasons.push(`${a.pair}: ${a.skipped}`);
         continue;
       }
-      const base = formatAnalysis(a);
+      const base = await formatAnalysis(a);
       let textOut = await polishAnalysis(
         env.geminiApiKey,
         base,
         a.rationale
       );
       if (
-        demoEnabled() &&
+        (await demoEnabled()) &&
         (a.direction === "LONG" || a.direction === "SHORT")
       ) {
         try {

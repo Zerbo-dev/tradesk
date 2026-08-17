@@ -1,5 +1,7 @@
 import type { AnalysisResult } from "./analysis";
 import type { SignalRow } from "./db";
+import { getSettings } from "./settings";
+import { renderTemplate } from "./templates";
 
 function stars(confidence: number): string {
   const full = Math.max(0, Math.min(5, Math.round(confidence)));
@@ -12,37 +14,45 @@ function num(value: number | null | undefined): string {
   return String(value);
 }
 
-export function formatAnalysis(a: AnalysisResult): string {
+export async function formatAnalysis(a: AnalysisResult): Promise<string> {
+  const settings = await getSettings();
+
   const bias =
-    a.direction === "LONG"
-      ? "🟢 LONG"
-      : a.direction === "SHORT"
-        ? "🔴 SHORT"
-        : "⚪ NEUTRE";
+    a.direction === "LONG" ? "LONG" : a.direction === "SHORT" ? "SHORT" : "NEUTRE";
+  const directionEmoji =
+    a.direction === "LONG" ? "🟢" : a.direction === "SHORT" ? "🔴" : "⚪";
 
-  const lines = [
-    `ANALYSE AUTO  ${a.pair}  |  ${a.timeframe}`,
-    `Biais    : ${bias}`,
-    `Prix     : ${num(a.price)}`,
-    `EMA20/50 : ${num(a.ema20)} / ${num(a.ema50)}`,
-    `RSI      : ${a.rsi}`,
-    `24h      : ${a.changePct >= 0 ? "+" : ""}${a.changePct}%`,
-  ];
+  const tradeLines =
+    a.direction !== "NEUTRAL"
+      ? [
+          `Entrée   : ${num(a.entryLow)} – ${num(a.entryHigh)}`,
+          `SL       : ${num(a.stopLoss)}`,
+          `TP1      : ${num(a.tp1)}`,
+          `TP2      : ${num(a.tp2)}`,
+        ].join("\n")
+      : "Action   : pas de trade — attendre un meilleur setup";
 
-  if (a.direction !== "NEUTRAL") {
-    lines.push(`Entrée   : ${num(a.entryLow)} – ${num(a.entryHigh)}`);
-    lines.push(`SL       : ${num(a.stopLoss)}`);
-    lines.push(`TP1      : ${num(a.tp1)}`);
-    lines.push(`TP2      : ${num(a.tp2)}`);
-  } else {
-    lines.push("Action   : pas de trade — attendre un meilleur setup");
-  }
-
-  lines.push(`Setup    : ${a.pattern}`);
-  lines.push(`Conf.    : ${stars(a.confidence)}`);
-  lines.push(`Pourquoi : ${a.rationale}`);
-  if (a.signalId) lines.push(`ID #${a.signalId}`);
-  return lines.join("\n");
+  return renderTemplate(settings.cryptoSignalTemplate, {
+    pair: a.pair,
+    timeframe: a.timeframe,
+    direction: bias,
+    directionEmoji,
+    price: num(a.price),
+    ema20: num(a.ema20),
+    ema50: num(a.ema50),
+    rsi: String(a.rsi),
+    changePct: `${a.changePct >= 0 ? "+" : ""}${a.changePct}`,
+    entryLow: num(a.entryLow),
+    entryHigh: num(a.entryHigh),
+    stopLoss: num(a.stopLoss),
+    tp1: num(a.tp1),
+    tp2: num(a.tp2),
+    tradeLines,
+    setup: a.pattern,
+    confidenceStars: stars(a.confidence),
+    rationale: a.rationale,
+    signalIdLine: a.signalId ? `ID #${a.signalId}` : "",
+  });
 }
 
 export function formatUpdate(

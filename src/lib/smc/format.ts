@@ -1,4 +1,6 @@
 import type { SmcSignal } from "./types";
+import { getSettings } from "../settings";
+import { renderTemplate } from "../templates";
 
 function fmt(n: number): string {
   return n.toFixed(2);
@@ -23,57 +25,50 @@ function rrDisplay(signal: SmcSignal): string {
   return `1:${ratio.toFixed(1)}`;
 }
 
-export function formatXauSignal(s: SmcSignal): string {
+export async function formatXauSignal(s: SmcSignal): Promise<string> {
+  const settings = await getSettings();
   const dir = s.direction === "BUY" ? "BUY 🟢" : "SELL 🔴";
-  return [
-    "🚨 *NOUVEAU SIGNAL XAUUSD* 🚨",
-    "",
-    `*Paire*: XAUUSD`,
-    `*Direction*: ${dir}`,
-    `*TF d'analyse*: ${s.timeframe}`,
-    `*Setup*: ${s.setup}`,
-    "",
-    `*📍 Entry Zone*: ${fmt(s.entryLow)} - ${fmt(s.entryHigh)}`,
-    `*🛑 Stop Loss*: ${fmt(s.stopLoss)}`,
-    `*🎯 Take Profit*:`,
-    `  TP1: ${fmt(s.tp1)} [1R]`,
-    `  TP2: ${fmt(s.tp2)} [2R] *50%*`,
-    `  TP3: ${fmt(s.tp3)} [3R] *Close*`,
-    "",
-    `*RR*: ${rrDisplay(s)}`,
-    `*Heure*: ${nowGmt()}`,
-    "",
-    `_Ne pas forcer l'entrée. Attends que le prix revienne dans la zone._`,
-  ].join("\n");
+  return renderTemplate(settings.xauSignalTemplate, {
+    direction: s.direction,
+    directionEmoji: dir,
+    timeframe: s.timeframe,
+    setup: s.setup,
+    entryLow: fmt(s.entryLow),
+    entryHigh: fmt(s.entryHigh),
+    stopLoss: fmt(s.stopLoss),
+    tp1: fmt(s.tp1),
+    tp2: fmt(s.tp2),
+    tp3: fmt(s.tp3),
+    rr: rrDisplay(s),
+    time: nowGmt(),
+  });
 }
 
-export function formatV100Signal(s: SmcSignal): string {
+export async function formatV100Signal(s: SmcSignal): Promise<string> {
+  const settings = await getSettings();
   const dir = s.direction === "BUY" ? "BUY 🟢" : "SELL 🔴";
   const slNote = s.direction === "BUY" ? "*Sous OTE*" : "*Au-dessus OTE*";
-  return [
-    "🚨 *NOUVEAU SIGNAL VOLATILITY 100* 🚨",
-    "",
-    `*Paire*: V100`,
-    `*Direction*: ${dir}`,
-    `*TF d'analyse*: ${s.timeframe}`,
-    `*Setup*: ${s.setup}`,
-    "",
-    `*📍 Zone OTE*: ${fmt(s.oteLow || 0)} - ${fmt(s.oteHigh || 0)}`,
-    `*📍 Entry Zone*: ${fmt(s.entryLow)} - ${fmt(s.entryHigh)} *FVG/OB trouvée*`,
-    `*🛑 Stop Loss*: ${fmt(s.stopLoss)} ${slNote}`,
-    `*🎯 Take Profit*:`,
-    `  TP1: ${fmt(s.tp1)} [1R]`,
-    `  TP2: ${fmt(s.tp2)} [2R] *50%*`,
-    `  TP3: ${fmt(s.tp3)} [3R] *Close*`,
-    "",
-    `*RR*: ${rrDisplay(s)}`,
-    `*Heure*: ${nowGmt()}`,
-    "",
-    `_Confluence: ${s.confluence}_`,
-  ].join("\n");
+  return renderTemplate(settings.v100SignalTemplate, {
+    direction: s.direction,
+    directionEmoji: dir,
+    timeframe: s.timeframe,
+    setup: s.setup,
+    oteLow: fmt(s.oteLow || 0),
+    oteHigh: fmt(s.oteHigh || 0),
+    entryLow: fmt(s.entryLow),
+    entryHigh: fmt(s.entryHigh),
+    stopLoss: fmt(s.stopLoss),
+    slNote,
+    tp1: fmt(s.tp1),
+    tp2: fmt(s.tp2),
+    tp3: fmt(s.tp3),
+    rr: rrDisplay(s),
+    time: nowGmt(),
+    confluence: s.confluence,
+  });
 }
 
-export function formatSmcSignal(s: SmcSignal): string {
+export async function formatSmcSignal(s: SmcSignal): Promise<string> {
   return s.pair === "XAUUSD" ? formatXauSignal(s) : formatV100Signal(s);
 }
 

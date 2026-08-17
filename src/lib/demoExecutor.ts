@@ -1,15 +1,19 @@
 import type { AnalysisResult } from "./analysis";
 import {
   demoEnabled,
+  demoProviderLabel,
+  getContractProfit,
   getDemoAccount,
   getDemoPositions,
   getIncomeRecent,
+  isRealTradingActive,
   placeDemoTrade,
   type PlaceDemoResult,
-} from "./binanceFuturesDemo";
+} from "./demo";
 import { getMeta, listOpenSignals, setMeta } from "./db";
 import { resolveSignal } from "./tracker";
 import { publishAnalysis } from "./telegram";
+import { getSettings } from "./settings";
 
 export type DemoOrderRecord = {
   signalId: number;
@@ -49,7 +53,7 @@ export async function loadDemoOrder(
 export async function executeDemoForAnalysis(
   a: AnalysisResult
 ): Promise<{ ok: boolean; detail: string; order?: PlaceDemoResult }> {
-  if (!demoEnabled()) {
+  if (!(await demoEnabled())) {
     return { ok: false, detail: "demo off" };
   }
   if (!a.signalId) return { ok: false, detail: "no signal id" };
@@ -60,14 +64,17 @@ export async function executeDemoForAnalysis(
     return { ok: false, detail: "missing SL/TP" };
   }
 
-  // 1 position max par symbole
-  const positions = await getDemoPositions();
+  // 1 position max par symbole (désactivable via l'admin — déconseillé)
+  const settings = await getSettings();
   const symbol = a.symbol.replace("/", "").toUpperCase();
-  if (positions.some((p) => p.symbol === symbol)) {
-    return {
-      ok: false,
-      detail: `position déjà ouverte sur ${symbol}`,
-    };
+  if (settings.demoOnePositionPerSymbol) {
+    const positions = await getDemoPositions();
+    if (positions.some((p) => p.symbol === symbol)) {
+      return {
+        ok: false,
+        detail: `position déjà ouverte sur ${symbol}`,
+      };
+    }
   }
 
   // TP2 si dispo, sinon TP1
@@ -107,7 +114,7 @@ export async function executeDemoForAnalysis(
 export async function syncDemoClosedTrades(opts?: {
   notify?: boolean;
 }): Promise<{ closed: number; details: string[] }> {
-  if (!demoEnabled()) return { closed: 0, details: [] };
+  if (!(await demoEnabled())) return { closed: 0, details: [] };
 
   const notify = opts?.notify !== false;
   const positions = await getDemoPositions();
@@ -127,17 +134,20 @@ export async function syncDemoClosedTrades(opts?: {
     const stillOpen = openSymbols.has(rec.symbol.toUpperCase());
     if (stillOpen) continue;
 
-    // Position disparue → chercher PnL récent sur ce symbole
-    const openedMs = new Date(rec.openedAt).getTime();
-    const hits = income
-      .filter(
-        (i) =>
-          i.symbol.toUpperCase() === rec.symbol.toUpperCase() &&
-          i.time >= openedMs - 5_000
-      )
-      .sort((a, b) => b.time - a.time);
-
-    const pnl = hits.reduce((s, i) => s + i.income, 0);
+    // Position disparue → PnL réel via contract_id (fiable, Deriv) sinon
+    // fallback sur le matching income par symbole/heure (Binance).
+    let pnl = await getContractProfit(rec.entryOrderId);
+    if (pnl === null) {
+      const openedMs = new Date(rec.openedAt).getTime();
+      const hits = income
+        .filter(
+          (i) =>
+            i.symbol.toUpperCase() === rec.symbol.toUpperCase() &&
+            i.time >= openedMs - 5_000
+        )
+        .sort((a, b) => b.time - a.time);
+      pnl = hits.reduce((s, i) => s + i.income, 0);
+    }
     const risk = Math.abs(rec.entryPrice - (signal.stop_loss || rec.entryPrice));
     const rMultiple =
       risk > 0 && rec.qty > 0
@@ -171,26 +181,33 @@ export async function syncDemoClosedTrades(opts?: {
 }
 
 export async function demoStatusText(): Promise<string> {
-  if (!demoEnabled()) {
+  if (!(await demoEnabled())) {
     return [
-      "Demo Binance: OFF",
+      "Demo trading: OFF",
       "",
-      "Pour activer:",
-      "1) Crée des clés sur https://demo.binance.com (Demo Trading API)",
+      "Active-le depuis le panneau admin (/admin), ou via ces variables:",
+      "1) Crée un jeton API sur https://app.deriv.com/account/api-token (scope Trade)",
       "2) Vercel env:",
       "   DEMO_EXECUTION=true",
-      "   BINANCE_DEMO_API_KEY=...",
-      "   BINANCE_DEMO_API_SECRET=...",
+      "   DEMO_PROVIDER=auto   (ou: deriv)",
+      "   DERIV_API_TOKEN=...",
       "   DEMO_NOTIONAL_USDT=50",
       "   DEMO_LEVERAGE=5",
+      "",
+      "Alternative Binance (si non bloqué chez toi):",
+      "   BINANCE_DEMO_API_KEY=...",
+      "   BINANCE_DEMO_API_SECRET=...",
     ].join("\n");
   }
 
   try {
     const acc = await getDemoAccount();
     const positions = await getDemoPositions();
+    const realMode = await isRealTradingActive();
+    const providerLabel = await demoProviderLabel();
     const lines = [
-      "Binance Futures DEMO",
+      realMode ? "🔴🔴🔴 ARGENT RÉEL — CE N'EST PAS UNE DÉMO 🔴🔴🔴" : "",
+      providerLabel,
       `Wallet : ${acc.walletBalance.toFixed(2)} USDT`,
       `Dispo  : ${acc.availableBalance.toFixed(2)} USDT`,
       `uPnL   : ${acc.unrealizedProfit >= 0 ? "+" : ""}${acc.unrealizedProfit.toFixed(2)} USDT`,
@@ -203,7 +220,7 @@ export async function demoStatusText(): Promise<string> {
           `• ${p.symbol} qty=${p.positionAmt} entry=${p.entryPrice} uPnL=${p.unrealizedProfit >= 0 ? "+" : ""}${p.unrealizedProfit.toFixed(2)} x${p.leverage}`
       ),
     ];
-    return lines.join("\n");
+    return lines.filter((l) => l !== "").join("\n");
   } catch (err) {
     return `Demo erreur: ${err instanceof Error ? err.message : "inconnu"}`;
   }

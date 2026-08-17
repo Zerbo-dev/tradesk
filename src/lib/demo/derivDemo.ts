@@ -1,5 +1,8 @@
 import { WebSocket } from "undici";
 import { getEnv } from "../env";
+import { getSettings } from "../settings";
+import { activeAccountType } from "./accountMode";
+import { getValidDerivAccessToken } from "./derivAuth";
 import type {
   DemoAccount,
   DemoIncome,
@@ -8,52 +11,231 @@ import type {
   PlaceDemoResult,
 } from "./types";
 
-const WS_BASE = "wss://ws.derivws.com/websockets/v3";
+/**
+ * Deriv a migré toute sa plateforme de trading vers une nouvelle
+ * architecture (confirmé via https://developers.deriv.com/llms.txt,
+ * août 2026) :
+ *
+ *   - REST : base https://api.derivws.com, headers
+ *     `Deriv-App-ID` + `Authorization: Bearer <access_token OAuth2>`.
+ *     Un PAT statique NE fonctionne PAS ici (confirmé empiriquement :
+ *     401 vide) — seul un access_token OAuth2 (Authorization Code+PKCE,
+ *     voir demo/derivAuth.ts) est accepté. Le PAT reste valide
+ *     uniquement pour l'endpoint bulk-purchase (non utilisé ici).
+ *   - WebSocket : `wss://api.derivws.com/trading/v1/options/ws/{demo|real}`,
+ *     obtenu via `POST /trading/v1/options/accounts/{accountId}/otp`.
+ *     Pas de message `authorize` sur le WS — l'URL OTP est déjà scopée
+ *     au compte.
+ *   - Le champ `symbol` est renommé `underlying_symbol` dans les messages
+ *     `proposal`/`buy`.
+ *
+ * Prérequis avant que ce module fonctionne : ouvrir une fois
+ * `/api/auth/deriv/start` dans un navigateur pour créer la session
+ * OAuth (voir demo/derivAuth.ts). Ensuite, le token se rafraîchit
+ * automatiquement côté serveur.
+ */
 
-/** Bot pairs → Deriv multiplier underlyings. */
+const REST_BASE = "https://api.derivws.com";
+
+/**
+ * Deriv n'accepte qu'un multiplicateur parmi une liste fixe pour les
+ * contrats Multipliers — pas un simple levier arbitraire comme Binance.
+ * Confirmé par erreur réelle : "Multiplier is not in acceptable range.
+ * Accepts 100,200,300,500,800." Cette liste peut varier selon le
+ * symbole ; `parseAcceptedMultipliers` la relit dynamiquement depuis le
+ * message d'erreur en filet de sécurité si elle diffère.
+ */
+const DEFAULT_ACCEPTED_MULTIPLIERS = [100, 200, 300, 500, 800];
+
+function snapMultiplier(desired: number, accepted: number[]): number {
+  return accepted.reduce((best, cur) =>
+    Math.abs(cur - desired) < Math.abs(best - desired) ? cur : best
+  );
+}
+
+function parseAcceptedMultipliers(message: string): number[] | null {
+  const m = message.match(/Accepts\s+([\d,\s]+)/i);
+  if (!m) return null;
+  const values = m[1]
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  return values.length ? values : null;
+}
+
+/** Coercition défensive : Deriv peut renvoyer des nombres en string. */
+function toNumber(v: unknown, fallback = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** Bot pairs → Deriv underlyings. */
 const SYMBOL_TO_DERIV: Record<string, string> = {
   BTCUSDT: "cryBTCUSD",
   ETHUSDT: "cryETHUSD",
   SOLUSDT: "crySOLUSD",
+  // Mêmes symboles Deriv que ceux déjà utilisés (et validés) par
+  // feeds/deriv.ts pour la lecture de bougies du bot SMC.
+  XAUUSD: "frxXAUUSD",
+  V100: "R_100",
 };
 
 const DERIV_TO_SYMBOL: Record<string, string> = Object.fromEntries(
   Object.entries(SYMBOL_TO_DERIV).map(([k, v]) => [v, k])
 );
 
-type DerivMsg = {
+function toDerivSymbol(symbol: string): string {
+  const sym = symbol.replace("/", "").toUpperCase();
+  const mapped = SYMBOL_TO_DERIV[sym];
+  if (!mapped) {
+    throw new Error(`Paire non supportée sur Deriv demo: ${sym}`);
+  }
+  return mapped;
+}
+
+function fromDerivSymbol(underlying?: string): string {
+  if (!underlying) return "UNKNOWN";
+  return DERIV_TO_SYMBOL[underlying] || underlying;
+}
+
+async function requireToken(): Promise<string> {
+  return getValidDerivAccessToken();
+}
+
+/* ------------------------------------------------------------------ */
+/* REST (compte, OTP)                                                  */
+/* ------------------------------------------------------------------ */
+
+async function restCall<T>(
+  path: string,
+  opts: { method?: "GET" | "POST"; body?: Record<string, unknown> } = {}
+): Promise<T> {
+  const env = getEnv();
+  const token = await requireToken();
+  const appId = env.derivAppId || "1089";
+
+  const res = await fetch(`${REST_BASE}${path}`, {
+    method: opts.method || "GET",
+    headers: {
+      "Deriv-App-ID": appId,
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    cache: "no-store",
+  });
+
+  const raw = (await res.json().catch(() => ({}))) as {
+    data?: unknown;
+    error?: { message?: string; code?: string };
+  };
+
+  if (!res.ok || raw.error) {
+    throw new Error(
+      raw.error?.message ||
+        raw.error?.code ||
+        `Deriv REST HTTP ${res.status} sur ${path}`
+    );
+  }
+
+  return (raw.data ?? raw) as T;
+}
+
+type DerivOptionsAccount = {
+  account_id: string;
+  balance: number | string;
+  currency: string;
+  group?: string;
+  status?: string;
+  account_type: "demo" | "real";
+};
+
+let cachedAccount: { type: string; id: string } | null = null;
+
+/**
+ * Trouve l'account_id du compte ACTIF sur ce token — "demo" par défaut,
+ * ou "real" UNIQUEMENT si le double verrou (DERIV_ACCOUNT_TYPE=real +
+ * REAL_TRADING_CONFIRMED=true) est levé. Voir demo/accountMode.ts.
+ */
+async function getDemoAccountId(): Promise<string> {
+  const type = await activeAccountType();
+  if (cachedAccount?.type === type) return cachedAccount.id;
+
+  const data = await restCall<DerivOptionsAccount | DerivOptionsAccount[]>(
+    "/trading/v1/options/accounts"
+  );
+  const accounts = Array.isArray(data) ? data : [data];
+  const acc = accounts.find((a) => a.account_type === type);
+  if (!acc) {
+    throw new Error(
+      `Aucun compte Deriv "${type}" trouvé pour ce token (vérifie DERIV_ACCOUNT_TYPE et que tu as bien autorisé ce compte lors du login OAuth)`
+    );
+  }
+  cachedAccount = { type, id: acc.account_id };
+  return acc.account_id;
+}
+
+async function getDemoAccountRaw(): Promise<DerivOptionsAccount> {
+  const type = await activeAccountType();
+  const data = await restCall<DerivOptionsAccount | DerivOptionsAccount[]>(
+    "/trading/v1/options/accounts"
+  );
+  const accounts = Array.isArray(data) ? data : [data];
+  const acc = accounts.find((a) => a.account_type === type);
+  if (!acc) throw new Error(`Aucun compte Deriv "${type}" trouvé`);
+  return acc;
+}
+
+async function getOtpWsUrl(accountId: string): Promise<string> {
+  const data = await restCall<{ url: string }>(
+    `/trading/v1/options/accounts/${accountId}/otp`,
+    { method: "POST" }
+  );
+  if (!data.url) throw new Error("Deriv: réponse OTP sans url");
+  return data.url;
+}
+
+/* ------------------------------------------------------------------ */
+/* WebSocket (proposal, buy, portfolio, profit_table)                  */
+/*                                                                      */
+/* L'URL OTP est déjà authentifiée pour le compte — aucun message      */
+/* `authorize` à envoyer après connexion.                              */
+/* ------------------------------------------------------------------ */
+
+type DerivWsMsg = {
   msg_type?: string;
-  error?: { message: string; code?: string };
+  error?: { message?: string; code?: string };
   req_id?: number;
-  authorize?: {
-    balance?: number;
-    currency?: string;
-    loginid?: string;
-  };
-  proposal?: {
-    id?: string;
-    ask_price?: number;
-    spot?: number;
-    display_value?: string;
-  };
-  buy?: {
-    contract_id?: number;
-    buy_price?: number;
-    entry_spot?: number;
-  };
+  proposal?: { id?: string; ask_price?: number; spot?: number };
+  buy?: { contract_id?: number; buy_price?: number; entry_spot?: number };
   portfolio?: {
     contracts?: {
       contract_id?: number;
-      symbol?: string;
       underlying?: string;
+      underlying_symbol?: string;
+      symbol?: string;
       contract_type?: string;
       buy_price?: number;
       bid_price?: number;
       profit?: number;
       multiplier?: number;
       entry_spot?: number;
-      display_name?: string;
     }[];
+  };
+  proposal_open_contract?: {
+    contract_id?: number;
+    underlying?: string;
+    underlying_symbol?: string;
+    symbol?: string;
+    contract_type?: string;
+    buy_price?: number;
+    bid_price?: number;
+    profit?: number;
+    multiplier?: number;
+    entry_spot?: number;
+    entry_tick?: number;
+    current_spot?: number;
+    is_sold?: number;
   };
   profit_table?: {
     transactions?: {
@@ -61,29 +243,37 @@ type DerivMsg = {
       profit?: number;
       purchase_time?: number;
       sell_time?: number;
-      shortcode?: string;
       underlying_symbol?: string;
+      underlying?: string;
     }[];
-  };
-  ticks_history?: {
-    history?: { prices?: number[] };
   };
 };
 
-class DerivSession {
+/** Lit underlying_symbol/underlying/symbol dans cet ordre (le nom exact
+ * varie selon l'endpoint — confirmé empiriquement, la doc ne le précise
+ * pas de façon fiable). */
+function extractUnderlying(o: {
+  underlying_symbol?: string;
+  underlying?: string;
+  symbol?: string;
+}): string | undefined {
+  return o.underlying_symbol || o.underlying || o.symbol;
+}
+
+class DerivOtpSession {
   private ws: WebSocket;
   private pending = new Map<
     number,
-    { resolve: (m: DerivMsg) => void; reject: (e: Error) => void }
+    { resolve: (m: DerivWsMsg) => void; reject: (e: Error) => void }
   >();
   private reqId = 1;
   private ready: Promise<void>;
 
-  constructor(appId: number) {
-    this.ws = new WebSocket(`${WS_BASE}?app_id=${appId}`);
+  constructor(otpUrl: string) {
+    this.ws = new WebSocket(otpUrl);
     this.ready = new Promise((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error("Deriv WS: connexion timeout")),
+        () => reject(new Error("Deriv WS (OTP): connexion timeout")),
         12_000
       );
       this.ws.addEventListener("open", () => {
@@ -92,20 +282,20 @@ class DerivSession {
       });
       this.ws.addEventListener("error", () => {
         clearTimeout(timer);
-        reject(new Error("Deriv WS: erreur connexion"));
+        reject(new Error("Deriv WS (OTP): erreur connexion"));
       });
       this.ws.addEventListener("message", (ev) => {
         try {
-          const msg = JSON.parse(String(ev.data)) as DerivMsg;
+          const msg = JSON.parse(String(ev.data)) as DerivWsMsg;
           this.onMessage(msg);
         } catch {
-          // ignore malformed frames
+          /* ignore trames malformées */
         }
       });
     });
   }
 
-  private onMessage(msg: DerivMsg) {
+  private onMessage(msg: DerivWsMsg) {
     if (!msg.req_id || !this.pending.has(msg.req_id)) return;
     const pending = this.pending.get(msg.req_id)!;
     this.pending.delete(msg.req_id);
@@ -119,7 +309,7 @@ class DerivSession {
   async call(
     payload: Record<string, unknown>,
     timeoutMs = 15_000
-  ): Promise<DerivMsg> {
+  ): Promise<DerivWsMsg> {
     await this.ready;
     const req_id = this.reqId++;
     return new Promise((resolve, reject) => {
@@ -145,34 +335,22 @@ class DerivSession {
     try {
       this.ws.close();
     } catch {
-      // already closed
+      /* déjà fermé */
     }
   }
 }
 
-async function withSession<T>(fn: (s: DerivSession) => Promise<T>): Promise<T> {
-  const env = getEnv();
-  const appId = Number(env.derivAppId || 1089);
-  const session = new DerivSession(appId);
+async function withOtpSession<T>(
+  fn: (s: DerivOtpSession) => Promise<T>
+): Promise<T> {
+  const accountId = await getDemoAccountId();
+  const otpUrl = await getOtpWsUrl(accountId);
+  const session = new DerivOtpSession(otpUrl);
   try {
     return await fn(session);
   } finally {
     session.close();
   }
-}
-
-function toDerivSymbol(symbol: string): string {
-  const sym = symbol.replace("/", "").toUpperCase();
-  const mapped = SYMBOL_TO_DERIV[sym];
-  if (!mapped) {
-    throw new Error(`Paire non supportée sur Deriv demo: ${sym}`);
-  }
-  return mapped;
-}
-
-function fromDerivSymbol(underlying?: string): string {
-  if (!underlying) return "UNKNOWN";
-  return DERIV_TO_SYMBOL[underlying] || underlying;
 }
 
 function priceLimitsToDerivAmounts(
@@ -198,61 +376,100 @@ function priceLimitsToDerivAmounts(
   };
 }
 
-async function authorize(session: DerivSession): Promise<void> {
-  const token = getEnv().derivApiToken;
-  if (!token) throw new Error("DERIV_API_TOKEN manquant");
-  const res = await session.call({ authorize: token });
-  if (!res.authorize?.loginid) {
-    throw new Error("Deriv: autorisation refusée (token demo + scope Trade)");
-  }
-}
-
-async function getSpot(session: DerivSession, derivSymbol: string): Promise<number> {
+async function getSpot(
+  session: DerivOtpSession,
+  derivSymbol: string
+): Promise<number> {
   const res = await session.call({
-    ticks_history: derivSymbol,
-    adjust_start_time: 1,
-    count: 1,
-    end: "latest",
-    style: "ticks",
+    proposal: 1,
+    amount: 1,
+    basis: "stake",
+    contract_type: "MULTUP",
+    currency: "USD",
+    underlying_symbol: derivSymbol,
+    // multiplier n'a pas d'effet sur le spot lu, mais Deriv rejette les
+    // valeurs hors liste acceptée (ex: "Accepts 100,200,300,500,800") —
+    // on utilise donc le plus petit multiplicateur standard plutôt que 1.
+    multiplier: DEFAULT_ACCEPTED_MULTIPLIERS[0],
   });
-  const prices = res.ticks_history?.history?.prices;
-  const spot = prices?.[prices.length - 1];
+  const spot = res.proposal?.spot;
   if (!spot || spot <= 0) throw new Error(`Prix indisponible pour ${derivSymbol}`);
   return spot;
 }
 
+/* ------------------------------------------------------------------ */
+/* API publique (même signature que le provider Binance)               */
+/* ------------------------------------------------------------------ */
+
 export async function getDemoAccount(): Promise<DemoAccount> {
-  return withSession(async (session) => {
-    await authorize(session);
-    const auth = await session.call({ authorize: getEnv().derivApiToken! });
-    const balance = Number(auth.authorize?.balance || 0);
+  const acc = await getDemoAccountRaw();
+  // La balance vient du REST /accounts. Le PnL non réalisé nécessite le
+  // portfolio (WS) — additionné ci-dessous, best-effort.
+  let uPnL = 0;
+  try {
+    uPnL = await withOtpSession(async (session) => {
+      const pf = await session.call({ portfolio: 1 });
+      return (
+        pf.portfolio?.contracts?.reduce((s, c) => s + toNumber(c.profit), 0) || 0
+      );
+    });
+  } catch {
+    // best-effort : si le portfolio échoue, on retourne juste la balance
+  }
 
-    const pf = await session.call({ portfolio: 1 });
-    const uPnL =
-      pf.portfolio?.contracts?.reduce((s, c) => s + Number(c.profit || 0), 0) ||
-      0;
+  // Deriv peut renvoyer `balance` en string selon l'endpoint — coercition
+  // défensive obligatoire, sinon .toFixed() plante côté appelant.
+  const balance = toNumber(acc.balance, NaN);
+  if (!Number.isFinite(balance)) {
+    throw new Error(
+      `Deriv: champ balance inattendu dans la réponse compte (reçu: ${JSON.stringify(acc)})`
+    );
+  }
 
-    return {
-      availableBalance: balance,
-      walletBalance: balance,
-      unrealizedProfit: uPnL,
-    };
-  });
+  return {
+    availableBalance: balance,
+    walletBalance: balance,
+    unrealizedProfit: uPnL,
+  };
 }
 
 export async function getDemoPositions(): Promise<DemoPosition[]> {
-  return withSession(async (session) => {
-    await authorize(session);
+  return withOtpSession(async (session) => {
     const pf = await session.call({ portfolio: 1 });
-    return (pf.portfolio?.contracts || []).map((c) => {
-      const underlying = c.underlying || c.symbol || "";
-      const isUp = (c.contract_type || "").includes("UP");
+    const contracts = pf.portfolio?.contracts || [];
+
+    // `portfolio` ne fournit pas toujours entry_spot/profit fiables —
+    // on relit chaque contrat ouvert via proposal_open_contract, la
+    // source correcte pour ces données en temps réel.
+    const detailed = await Promise.all(
+      contracts.map(async (c) => {
+        if (!c.contract_id) return null;
+        try {
+          const res = await session.call({
+            proposal_open_contract: 1,
+            contract_id: c.contract_id,
+          });
+          return res.proposal_open_contract || null;
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    return contracts.map((c, i) => {
+      const detail = detailed[i];
+      const underlying = extractUnderlying(detail || c) || "";
+      const contractType = detail?.contract_type || c.contract_type || "";
+      const isUp = contractType.includes("UP");
       return {
         symbol: fromDerivSymbol(underlying),
         positionAmt: isUp ? 1 : -1,
-        entryPrice: Number(c.entry_spot || c.buy_price || 0),
-        unrealizedProfit: Number(c.profit || 0),
-        leverage: Number(c.multiplier || 1),
+        entryPrice: toNumber(
+          detail?.entry_spot ?? detail?.entry_tick ?? c.entry_spot,
+          0
+        ),
+        unrealizedProfit: toNumber(detail?.profit ?? c.profit, 0),
+        leverage: toNumber(detail?.multiplier ?? c.multiplier, 1),
         contractId: c.contract_id ? String(c.contract_id) : undefined,
       };
     });
@@ -262,16 +479,16 @@ export async function getDemoPositions(): Promise<DemoPosition[]> {
 export async function placeDemoTrade(
   input: PlaceDemoInput
 ): Promise<PlaceDemoResult> {
-  const env = getEnv();
+  const settings = await getSettings();
   const symbol = input.symbol.replace("/", "").toUpperCase();
   const derivSymbol = toDerivSymbol(symbol);
-  const stake = input.notionalUsdt ?? env.demoNotionalUsdt;
-  const multiplier = input.leverage ?? env.demoLeverage;
+  const stake = input.notionalUsdt ?? settings.demoNotionalUsdt;
+  const desiredMultiplier = input.leverage ?? settings.demoLeverage;
+  let multiplier = snapMultiplier(desiredMultiplier, DEFAULT_ACCEPTED_MULTIPLIERS);
 
-  return withSession(async (session) => {
-    await authorize(session);
+  return withOtpSession(async (session) => {
     const spot = await getSpot(session, derivSymbol);
-    const limits = priceLimitsToDerivAmounts(
+    let limits = priceLimitsToDerivAmounts(
       input.direction,
       spot,
       input.stopLoss,
@@ -280,16 +497,40 @@ export async function placeDemoTrade(
       multiplier
     );
 
-    const proposal = await session.call({
-      proposal: 1,
-      amount: stake,
-      basis: "stake",
-      contract_type: input.direction === "LONG" ? "MULTUP" : "MULTDOWN",
-      currency: "USD",
-      symbol: derivSymbol,
-      multiplier,
-      limit_order: limits,
-    });
+    async function sendProposal() {
+      return session.call({
+        proposal: 1,
+        amount: stake,
+        basis: "stake",
+        contract_type: input.direction === "LONG" ? "MULTUP" : "MULTDOWN",
+        currency: "USD",
+        underlying_symbol: derivSymbol,
+        multiplier,
+        limit_order: limits,
+      });
+    }
+
+    let proposal: DerivWsMsg;
+    try {
+      proposal = await sendProposal();
+    } catch (err) {
+      // Le set accepté peut différer de DEFAULT_ACCEPTED_MULTIPLIERS selon
+      // le symbole — on relit la vraie liste dans le message d'erreur et
+      // on retente une fois avec la valeur la plus proche.
+      const message = err instanceof Error ? err.message : String(err);
+      const accepted = parseAcceptedMultipliers(message);
+      if (!accepted) throw err;
+      multiplier = snapMultiplier(desiredMultiplier, accepted);
+      limits = priceLimitsToDerivAmounts(
+        input.direction,
+        spot,
+        input.stopLoss,
+        input.takeProfit,
+        stake,
+        multiplier
+      );
+      proposal = await sendProposal();
+    }
 
     const propId = proposal.proposal?.id;
     if (!propId) throw new Error("Deriv: proposal sans id");
@@ -314,8 +555,7 @@ export async function placeDemoTrade(
 }
 
 export async function getIncomeRecent(limit = 50): Promise<DemoIncome[]> {
-  return withSession(async (session) => {
-    await authorize(session);
+  return withOtpSession(async (session) => {
     const pt = await session.call({
       profit_table: 1,
       description: 1,
@@ -324,11 +564,34 @@ export async function getIncomeRecent(limit = 50): Promise<DemoIncome[]> {
     });
 
     return (pt.profit_table?.transactions || []).map((t) => ({
-      symbol: fromDerivSymbol(t.underlying_symbol),
+      symbol: fromDerivSymbol(t.underlying_symbol || t.underlying),
       income: Number(t.profit || 0),
       time: Number((t.sell_time || t.purchase_time || 0) * 1000),
       incomeType: "REALIZED_PNL",
       contractId: t.contract_id ? String(t.contract_id) : undefined,
     }));
   });
+}
+
+/**
+ * Lit le PnL réel d'UN contrat par son contract_id — bien plus fiable que
+ * profit_table (dont le matching symbole/heure s'est avéré ne rien
+ * retourner sur la nouvelle API Deriv, cause du bug "PnL toujours +0.00").
+ * Renvoie null si le contrat est introuvable/erreur (best-effort).
+ */
+export async function getContractProfit(contractId: string): Promise<number | null> {
+  try {
+    return await withOtpSession(async (session) => {
+      const res = await session.call({
+        proposal_open_contract: 1,
+        contract_id: Number(contractId),
+      });
+      const c = res.proposal_open_contract;
+      if (!c) return null;
+      const profit = toNumber(c.profit, NaN);
+      return Number.isFinite(profit) ? profit : null;
+    });
+  } catch {
+    return null;
+  }
 }

@@ -9,7 +9,8 @@
     "lint": "next lint",
     "set-webhook": "tsx scripts/set-webhook.ts",
     "analyze-once": "tsx scripts/analyze-once.ts",
-    "analyze-smc": "tsx scripts/analyze-smc-once.ts"
+    "analyze-smc": "tsx scripts/analyze-smc-once.ts",
+    "smc-selector-once": "tsx scripts/smc-selector-once.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.50.0",

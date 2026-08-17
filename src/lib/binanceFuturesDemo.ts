@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { getEnv } from "./env";
+import { getSettings } from "./settings";
 import type {
   DemoAccount,
   DemoIncome,
@@ -186,10 +187,10 @@ export async function getDemoPositions(): Promise<DemoPosition[]> {
 export async function placeDemoTrade(
   input: PlaceDemoInput
 ): Promise<PlaceDemoResult> {
-  const env = getEnv();
+  const settings = await getSettings();
   const symbol = input.symbol.replace("/", "").toUpperCase();
-  const notional = input.notionalUsdt ?? env.demoNotionalUsdt;
-  const leverage = input.leverage ?? env.demoLeverage;
+  const notional = input.notionalUsdt ?? settings.demoNotionalUsdt;
+  const leverage = input.leverage ?? settings.demoLeverage;
   const filters = await getFilters(symbol);
 
   // One-way mode + leverage
@@ -302,4 +303,10 @@ export async function getIncomeRecent(limit = 50): Promise<
     time: r.time,
     incomeType: r.incomeType,
   }));
+}
+
+/** Binance n'a pas de contract_id — toujours null, on garde le matching
+ * par income/symbole/heure pour ce provider. */
+export async function getContractProfit(_contractId: string): Promise<number | null> {
+  return null;
 }

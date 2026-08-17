@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getEnv } from "@/lib/env";
+import { getSettings } from "@/lib/settings";
 import { runAllAnalyses } from "@/lib/analysis";
 import { formatAnalysis } from "@/lib/format";
 import { publishAnalysis } from "@/lib/telegram";
 import { setMeta, updateSignal } from "@/lib/db";
 import { autoResolveOpenSignals } from "@/lib/autoResolve";
-import { demoEnabled } from "@/lib/binanceFuturesDemo";
+import { demoEnabled, isRealTradingActive } from "@/lib/demo";
 import {
   executeDemoForAnalysis,
   syncDemoClosedTrades,
@@ -24,24 +25,26 @@ function authorized(req: NextRequest): boolean {
 
 async function run(force = false) {
   const env = getEnv();
+  const settings = await getSettings();
+  const demoActive = await demoEnabled();
 
   // 1) Sync clôtures compte démo (si activé)
-  const demoSync = demoEnabled()
+  const demoSync = demoActive
     ? await syncDemoClosedTrades({ notify: true })
     : { closed: 0, details: [] as string[] };
 
   // 2) Clôture papier (bougies) — fallback / complément
   const resolved = await autoResolveOpenSignals({
-    expireHours: Number(process.env.AUTO_EXPIRE_HOURS || 24),
+    expireHours: settings.autoExpireHours,
     notify: true,
     timeframe: "15m",
   });
 
   // 3) Nouvelles analyses
   const results = await runAllAnalyses(
-    env.pairs,
-    env.timeframe,
-    force ? 0 : env.cooldownMinutes
+    settings.analyzePairs,
+    settings.analyzeTimeframe,
+    force ? 0 : settings.analyzeCooldownMinutes
   );
   const published: number[] = [];
   const skipped: { pair: string; reason: string }[] = [];
@@ -55,18 +58,21 @@ async function run(force = false) {
     }
     try {
       // Pas de Gemini sur le cron (évite timeout). Texte direct.
-      let text = formatAnalysis(a);
+      let text = await formatAnalysis(a);
 
-      // 3b) Exécution démo sur LONG/SHORT
-      if (demoEnabled() && (a.direction === "LONG" || a.direction === "SHORT")) {
+      // 3b) Exécution démo/réelle sur LONG/SHORT
+      if (demoActive && (a.direction === "LONG" || a.direction === "SHORT")) {
         try {
           const demo = await executeDemoForAnalysis(a);
+          const realMode = await isRealTradingActive();
           if (demo.ok) {
             demoOrders.push(demo.detail);
-            text += `\n\n💰 DEMO ORDER\n${demo.detail}`;
+            text += realMode
+              ? `\n\n🔴 ORDRE RÉEL (argent véritable)\n${demo.detail}`
+              : `\n\n💰 DEMO ORDER\n${demo.detail}`;
           } else if (demo.detail !== "demo off" && demo.detail !== "neutral skip") {
             demoOrders.push(`${a.pair}: ${demo.detail}`);
-            text += `\n\n⚠️ DEMO: ${demo.detail}`;
+            text += realMode ? `\n\n⚠️ RÉEL: ${demo.detail}` : `\n\n⚠️ DEMO: ${demo.detail}`;
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : "demo error";
@@ -100,7 +106,7 @@ async function run(force = false) {
     skipped,
     errors,
     resolved,
-    demoEnabled: demoEnabled(),
+    demoEnabled: demoActive,
     demoSync,
     demoOrders,
     count: results.length,

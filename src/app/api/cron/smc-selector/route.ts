@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getEnv } from "@/lib/env";
+import { getSettings } from "@/lib/settings";
 import { runSmcSelectorTick } from "@/lib/smc-selector/engine";
+import {
+  executeDemoForSetup,
+  syncSelectorDemoClosedTrades,
+} from "@/lib/smc-selector/demoExecutor";
 import { formatSmcSignal } from "@/lib/smc/format";
 import { publishSmcSignal } from "@/lib/telegram";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-
-// Seuil de publication immédiate — ajustable sans toucher au code.
-const DEFAULT_THRESHOLD = 85;
 
 function authorized(req: NextRequest): boolean {
   const env = getEnv();
@@ -25,17 +27,23 @@ async function run() {
     return { ok: false, error: "SMC_CHANNEL_ID manquant", published: [] as string[] };
   }
 
-  const thresholdRaw = process.env.SMC_SELECTOR_THRESHOLD;
-  const threshold = thresholdRaw ? Number(thresholdRaw) : DEFAULT_THRESHOLD;
+  const settings = await getSettings();
+  const threshold = settings.smcSelectorThreshold;
+
+  // 1) Détecter et notifier les trades démo clos depuis le dernier tick,
+  //    AVANT d'ouvrir quoi que ce soit de nouveau (même ordre que le bot
+  //    crypto : sync puis analyse).
+  const closedSync = await syncSelectorDemoClosedTrades();
 
   const tick = await runSmcSelectorTick({ threshold });
 
   const published: string[] = [];
   const publishErrors: string[] = [];
+  const demoResults: string[] = [];
 
   for (const setup of tick.toPublish) {
     try {
-      const text = formatSmcSignal(setup.signal);
+      const text = await formatSmcSignal(setup.signal);
       const pub = await publishSmcSignal(text);
       if (pub.errors.length) {
         publishErrors.push(...pub.errors.map((e) => `${setup.pair}: ${e}`));
@@ -48,6 +56,18 @@ async function run() {
     } catch (err) {
       publishErrors.push(`${setup.pair}: ${err instanceof Error ? err.message : "erreur"}`);
     }
+
+    // 2) Exécution démo (best-effort, ne bloque jamais la publication du
+    //    signal — le canal doit recevoir le signal même si le trade démo
+    //    échoue).
+    try {
+      const demo = await executeDemoForSetup(setup);
+      demoResults.push(`${setup.pair}: ${demo.detail}`);
+    } catch (err) {
+      demoResults.push(
+        `${setup.pair}: erreur démo ${err instanceof Error ? err.message : "inconnue"}`
+      );
+    }
   }
 
   return {
@@ -58,6 +78,8 @@ async function run() {
     threshold: tick.threshold,
     published,
     results: tick.results,
+    demo: demoResults,
+    demoClosed: closedSync.details,
     errors: publishErrors,
   };
 }

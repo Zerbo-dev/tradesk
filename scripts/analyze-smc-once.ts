@@ -64,7 +64,7 @@ async function main() {
       throw new Error("SMC_CHANNEL_ID manquant dans .env.local");
     }
     for (const s of scan.signals) {
-      const pub = await publishSmcSignal(formatSmcSignal(s));
+      const pub = await publishSmcSignal(await formatSmcSignal(s));
       console.log("published", s.pair, pub);
     }
     if (!scan.signals.length) {

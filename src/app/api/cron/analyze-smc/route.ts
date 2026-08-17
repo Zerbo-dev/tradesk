@@ -36,7 +36,7 @@ async function run(force = false) {
 
   for (const signal of scan.signals) {
     try {
-      const text = formatSmcSignal(signal);
+      const text = await formatSmcSignal(signal);
       const pub = await publishSmcSignal(text);
       if (pub.errors.length) {
         publishErrors.push(...pub.errors.map((e) => `${signal.pair}: ${e}`));

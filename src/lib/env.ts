@@ -55,8 +55,18 @@ export function getEnv() {
     demoExecution: (optional("DEMO_EXECUTION") || "false").toLowerCase() === "true",
     /** auto | deriv | binance — auto = Deriv si token, sinon Binance */
     demoProvider: optional("DEMO_PROVIDER") || "auto",
+    /** Legacy PAT — plus utilisé pour l'auth des endpoints REST Deriv
+     * (uniquement valide sur bulk-purchase). Conservé pour rétro-compat. */
     derivApiToken: optional("DERIV_API_TOKEN"),
     derivAppId: optional("DERIV_APP_ID") || "1089",
+    /** OAuth2 + PKCE — requis pour l'exécution démo Deriv (nouvelle API). */
+    derivOauthRedirectUri: optional("DERIV_OAUTH_REDIRECT_URI"),
+    derivOauthScope: optional("DERIV_OAUTH_SCOPE") || "trade",
+    /** DOUBLE VERROU réel — voir demo/accountMode.ts. Les deux doivent
+     * être présentes pour trader en argent réel, sinon reste en démo. */
+    derivAccountType: (optional("DERIV_ACCOUNT_TYPE") || "demo").toLowerCase(),
+    realTradingConfirmed:
+      (optional("REAL_TRADING_CONFIRMED") || "false").toLowerCase() === "true",
     binanceDemoKey: optional("BINANCE_DEMO_API_KEY"),
     binanceDemoSecret: optional("BINANCE_DEMO_API_SECRET"),
     demoNotionalUsdt: Number(optional("DEMO_NOTIONAL_USDT") || 50),
