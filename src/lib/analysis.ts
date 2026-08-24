@@ -47,7 +47,7 @@ function roundPrice(price: number): number {
   return Math.round(price * 1e6) / 1e6;
 }
 
-function analyzeCandles(
+export function analyzeCandles(
   symbol: string,
   timeframe: string,
   candles: Candle[]
