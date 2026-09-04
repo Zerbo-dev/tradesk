@@ -69,7 +69,7 @@ async function run(force = false) {
             demoOrders.push(demo.detail);
             text += realMode
               ? `\n\n🔴 ORDRE RÉEL (argent véritable)\n${demo.detail}`
-              : `\n\n💰 DEMO ORDER\n${demo.detail}`;
+              : `\n\n💰 TRADE ORDER\n${demo.detail}`;
           } else if (demo.detail !== "demo off" && demo.detail !== "neutral skip") {
             demoOrders.push(`${a.pair}: ${demo.detail}`);
             text += realMode ? `\n\n⚠️ RÉEL: ${demo.detail}` : `\n\n⚠️ DEMO: ${demo.detail}`;
@@ -77,7 +77,7 @@ async function run(force = false) {
         } catch (err) {
           const msg = err instanceof Error ? err.message : "demo error";
           demoOrders.push(`${a.pair}: ${msg}`);
-          text += `\n\n⚠️ DEMO ERROR: ${msg}`;
+          text += `\n\n⚠️ TRADE ERROR: ${msg}`;
         }
       }
 
