@@ -100,11 +100,11 @@ export async function polishAnalysis(
     // Post-process: strip surrounding markdown bold, triple backticks, and internal model signatures.
     let out = text.trim();
 
-    // Remove common markdown fences and bold markers
+    // Remove common markdown fences and bold markers — use [\s\S] instead of dotAll for older targets
     out = out.replace(/(^```[a-zA-Z0-9]*\s*)|(```$)/g, "");
-    out = out.replace(/\*\*(.*?)\*\*/gs, "$1");
-    out = out.replace(/__([^_]*)__/gs, "$1");
-    out = out.replace(/`([^`]*)`/gs, "$1");
+    out = out.replace(/\*\*([\s\S]*?)\*\*/g, "$1");
+    out = out.replace(/__([\s\S]*?)__/g, "$1");
+    out = out.replace(/`([\s\S]*?)`/g, "$1");
 
     // Remove any lines that look like model/internal signatures
     out = out
