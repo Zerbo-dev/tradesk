@@ -33,7 +33,7 @@ export async function polishAnalysis(
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           // Raise max tokens a bit to avoid truncation; lower temperature for determinism
-          generationConfig: { temperature: 0.2, maxOutputTokens: 800 },
+          generationConfig: { temperature: 0.2, maxOutputTokens: 15000 },
         }),
       }
     );
