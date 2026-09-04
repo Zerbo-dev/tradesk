@@ -78,7 +78,7 @@ export async function executeDemoForAnalysis(
   }
 
   // TP2 si dispo, sinon TP1
-  const tp = a.tp2 ?? a.tp1;
+  const tp = a.tp1 ?? a.tp2;
   const order = await placeDemoTrade({
     symbol,
     direction: a.direction,
@@ -102,7 +102,7 @@ export async function executeDemoForAnalysis(
 
   return {
     ok: true,
-    detail: `DEMO ${a.direction} ${order.symbol} qty=${order.qty} @ ${order.entryPrice}`,
+    detail: `TRADE ${a.direction} ${order.symbol} qty=${order.qty} @ ${order.entryPrice}`,
     order,
   };
 }
@@ -169,7 +169,7 @@ export async function syncDemoClosedTrades(opts?: {
     });
 
     closed += 1;
-    const line = `DEMO CLOSE #${signal.id} ${rec.symbol} PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USDT (~${rMultiple >= 0 ? "+" : ""}${rMultiple.toFixed(2)}R)`;
+    const line = `TRADE CLOSE #${signal.id} ${rec.symbol} PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USDT (~${rMultiple >= 0 ? "+" : ""}${rMultiple.toFixed(2)}R)`;
     details.push(line);
 
     if (notify) {
