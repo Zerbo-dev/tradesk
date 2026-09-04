@@ -1,4 +1,3 @@
-```ts
 export async function polishAnalysis(
   apiKey: string | undefined,
   base: string,
@@ -134,4 +133,3 @@ export async function polishAnalysis(
     return base;
   }
 }
-```
