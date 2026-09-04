@@ -4,9 +4,8 @@ export async function polishAnalysis(
   base: string,
   rationale: string
 ): Promise<string> {
-  // Vérification de la clé API
   if (!apiKey) {
-    console.error("❌ Gemini: GEMINI_API_KEY absente");
+    console.error("Gemini: GEMINI_API_KEY absente");
     return base;
   }
 
@@ -14,12 +13,15 @@ export async function polishAnalysis(
     "Tu es un desk crypto sobre. Réécris le message Telegram ci-dessous. " +
     "Garde la structure et les chiffres. Ajoute au plus une phrase claire. " +
     "Français, zéro hype.\n\n" +
-    `Contexte: ${rationale}\n\nMessage:\n${base}`;
+    "Contexte: " +
+    rationale +
+    "\n\nMessage:\n" +
+    base;
 
   const started = Date.now();
 
   try {
-    console.log("🤖 Gemini: appel en cours...");
+    console.log("Gemini: appel en cours...");
 
     const res = await fetch(
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=" +
@@ -50,17 +52,15 @@ export async function polishAnalysis(
     const duration = Date.now() - started;
     const responseText = await res.text();
 
-    console.log("🤖 Gemini status:", res.status);
-    console.log("🤖 Gemini duration:", `${duration}ms`);
+    console.log("Gemini status:", res.status);
+    console.log("Gemini duration:", duration + "ms");
 
-    // Afficher la réponse brute complète de Gemini
     console.log("========== GEMINI RAW RESPONSE ==========");
     console.log(responseText);
     console.log("==========================================");
 
-    // Gestion des erreurs HTTP
     if (!res.ok) {
-      console.error("❌ Gemini HTTP error:", responseText);
+      console.error("Gemini HTTP error:", responseText);
       return base;
     }
 
@@ -81,14 +81,13 @@ export async function polishAnalysis(
     try {
       data = JSON.parse(responseText);
     } catch (err) {
-      console.error("❌ Gemini: réponse JSON invalide", err);
+      console.error("Gemini: réponse JSON invalide", err);
       return base;
     }
 
-    // Vérification d'un éventuel blocage
     if (data.promptFeedback?.blockReason) {
       console.error(
-        "❌ Gemini: prompt bloqué:",
+        "Gemini: prompt bloqué:",
         data.promptFeedback.blockReason
       );
       return base;
@@ -97,12 +96,12 @@ export async function polishAnalysis(
     const candidate = data.candidates?.[0];
 
     if (!candidate) {
-      console.error("❌ Gemini: aucun candidate dans la réponse");
+      console.error("Gemini: aucun candidate dans la réponse");
       return base;
     }
 
     if (candidate.finishReason) {
-      console.log("🤖 Gemini finishReason:", candidate.finishReason);
+      console.log("Gemini finishReason:", candidate.finishReason);
     }
 
     const text =
@@ -110,24 +109,23 @@ export async function polishAnalysis(
         ?.map((part) => part.text || "")
         .join("") || "";
 
-    // Afficher uniquement le texte généré
     console.log("========== GEMINI GENERATED TEXT ==========");
     console.log(text);
     console.log("============================================");
 
     if (!text.trim()) {
-      console.error("❌ Gemini: texte généré vide");
+      console.error("Gemini: texte généré vide");
       return base;
     }
 
-    console.log("✅ Gemini: réponse reçue avec succès");
+    console.log("Gemini: réponse reçue avec succès");
 
     return text.trim();
   } catch (err) {
     const duration = Date.now() - started;
 
-    console.error("❌ Gemini exception");
-    console.error("Gemini duration:", `${duration}ms`);
+    console.error("Gemini exception");
+    console.error("Gemini duration:", duration + "ms");
     console.error(
       "Gemini error:",
       err instanceof Error ? err.message : err
