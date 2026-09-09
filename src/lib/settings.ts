@@ -17,6 +17,9 @@ export type AppSettings = {
   analyzeTimeframe: string;
   analyzeCooldownMinutes: number;
   autoExpireHours: number;
+  /** Source des bougies pour le bot crypto — Deriv recommandé (même
+   * source que l'exécution, évite l'écart Binance/Deriv). */
+  cryptoPriceSource: "binance" | "deriv";
 
   // Bot SMC classique (XAUUSD/V100)
   smcCooldownMinutes: number;
@@ -52,6 +55,7 @@ function defaultsFromEnv(): AppSettings {
     analyzeTimeframe: env.timeframe,
     analyzeCooldownMinutes: env.cooldownMinutes,
     autoExpireHours: env.autoExpireHours,
+    cryptoPriceSource: "deriv",
     smcCooldownMinutes: env.smcCooldownMinutes,
     smcPostEmpty: env.smcPostEmpty,
     smcSelectorThreshold: Number(process.env.SMC_SELECTOR_THRESHOLD || 85),
@@ -87,6 +91,9 @@ function sanitize(partial: Partial<AppSettings>, base: AppSettings): AppSettings
 
   if (!["auto", "deriv", "binance"].includes(next.demoProvider)) {
     next.demoProvider = base.demoProvider;
+  }
+  if (!["binance", "deriv"].includes(next.cryptoPriceSource)) {
+    next.cryptoPriceSource = base.cryptoPriceSource;
   }
   if (!["demo", "real"].includes(next.derivAccountType)) {
     next.derivAccountType = base.derivAccountType;

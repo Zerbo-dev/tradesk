@@ -1,0 +1,2254 @@
+diff --git a/src/app/admin/admin.css b/src/app/admin/admin.css
+index bb418e6..1f0a4d9 100644
+--- a/src/app/admin/admin.css
++++ b/src/app/admin/admin.css
+@@ -233,3 +233,58 @@ textarea.input { resize: vertical; min-height: 160px; font-size: 12.5px; line-he
+   padding: 28px;
+   box-shadow: var(--shadow);
+ }
++
++/* ---- Layout dashboard (sidebar + contenu) ---- */
++.dash-shell { display: flex; min-height: 100vh; }
++.dash-sidebar {
++  width: 216px;
++  flex-shrink: 0;
++  background: var(--bg-elevated);
++  border-right: 1px solid var(--line);
++  padding: 22px 14px;
++  position: sticky;
++  top: 0;
++  height: 100vh;
++  display: flex;
++  flex-direction: column;
++}
++.dash-nav { margin-top: 26px; display: flex; flex-direction: column; gap: 2px; }
++.dash-nav a {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  padding: 9px 12px;
++  border-radius: 9px;
++  font-size: 13px;
++  font-weight: 600;
++  color: var(--text-soft);
++  text-decoration: none;
++  transition: background .12s, color .12s;
++}
++.dash-nav a:hover { background: var(--panel-soft); color: var(--text); }
++.dash-nav a.active { background: var(--green-soft); color: var(--green-bright); }
++.dash-content { flex: 1; min-width: 0; }
++.dash-inner { max-width: 900px; margin: 0 auto; padding: 32px 28px 90px; }
++
++.kpi-grid {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
++  gap: 12px;
++  margin-bottom: 20px;
++}
++.kpi-card {
++  background: var(--panel);
++  border: 1px solid var(--line);
++  border-radius: var(--radius);
++  padding: 16px;
++}
++.kpi-label { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
++.kpi-value { font-family: var(--display); font-size: 24px; font-weight: 800; margin-top: 6px; }
++
++.sparkline { display: block; width: 100%; height: 60px; margin-top: 10px; }
++
++@media (max-width: 760px) {
++  .dash-shell { flex-direction: column; }
++  .dash-sidebar { width: 100%; height: auto; position: static; }
++  .dash-nav { flex-direction: row; overflow-x: auto; margin-top: 14px; }
++}
+diff --git a/src/app/admin/backtest/page.tsx b/src/app/admin/backtest/page.tsx
+index 38cfb6c..33188fc 100644
+--- a/src/app/admin/backtest/page.tsx
++++ b/src/app/admin/backtest/page.tsx
+@@ -1,7 +1,6 @@
+ "use client";
+ 
+ import { useEffect, useState } from "react";
+-import "../admin.css";
+ 
+ type Trade = {
+   time: number;
+@@ -22,24 +21,54 @@ type Result = {
+ };
+ 
+ const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
++const DERIV_PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+ 
+ export default function BacktestPage() {
++  const [source, setSource] = useState<"forex" | "deriv">("deriv");
+   const [pairs, setPairs] = useState<string[]>([]);
+-  const [pair, setPair] = useState("EURUSD");
++  const [pair, setPair] = useState("BTCUSDT");
+   const [timeframe, setTimeframe] = useState("1h");
++  const [days, setDays] = useState(180);
++  const [cache, setCache] = useState<{ cached: boolean; bars: number } | null>(null);
++  const [downloading, setDownloading] = useState(false);
+   const [result, setResult] = useState<Result | null>(null);
+   const [loading, setLoading] = useState(false);
+   const [error, setError] = useState<string | null>(null);
+ 
++  async function checkCache() {
++    if (source !== "deriv") return;
++    const res = await fetch(`/api/admin/backtest?source=deriv-status&pair=${pair}&timeframe=${timeframe}`);
++    const data = await res.json();
++    if (data.ok) setCache(data);
++  }
++
++  async function download() {
++    setDownloading(true);
++    setError(null);
++    try {
++      const res = await fetch("/api/admin/backtest", {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({ pair, timeframe, days }),
++      });
++      const data = await res.json();
++      if (!res.ok || !data.ok) setError(data.error || "Échec téléchargement");
++      else await checkCache();
++    } catch {
++      setError("Erreur réseau");
++    } finally {
++      setDownloading(false);
++    }
++  }
++
+   async function run() {
+     setLoading(true);
+     setError(null);
+     try {
+-      const res = await fetch(`/api/admin/backtest?pair=${pair}&timeframe=${timeframe}`);
++      const res = await fetch(`/api/admin/backtest?source=${source}&pair=${pair}&timeframe=${timeframe}`);
+       const data = await res.json();
+-      if (!res.ok || !data.ok) {
+-        setError(data.error || "Échec");
+-      } else {
++      if (!res.ok || !data.ok) setError(data.error || "Échec");
++      else {
+         setPairs(data.pairs);
+         setResult(data.result);
+       }
+@@ -51,87 +80,119 @@ export default function BacktestPage() {
+   }
+ 
+   useEffect(() => {
+-    run();
+-  }, []);
++    if (source === "deriv") {
++      setPair((p) => (DERIV_PAIRS.includes(p) ? p : "BTCUSDT"));
++      checkCache();
++    } else {
++      run();
++    }
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [source]);
++
++  useEffect(() => {
++    if (source === "deriv") checkCache();
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [pair, timeframe]);
+ 
+   return (
+-    <div className="admin-root">
+-      <main className="admin-shell">
+-        <div className="admin-topbar">
+-          <div className="admin-brand"><span className="dot" />Backtest</div>
+-        </div>
++    <>
++      <div className="admin-topbar">
++        <h1 style={{ fontFamily: "var(--display)", fontSize: 22 }}>Backtest</h1>
++      </div>
+ 
+-        <div className="banner banner-info">
+-          Rejoue la vraie logique du bot crypto (EMA20/50 + RSI + pullback) sur données
+-          historiques réelles 2024. Paires forex majeures (pas les paires live du bot),
+-          pour valider la stratégie elle-même.
++      <div className="banner banner-info">
++        Rejoue la vraie logique du bot crypto (EMA20/50 + RSI + pullback). Deriv = vraies
++        paires du bot (BTC/ETH/SOL), historique à télécharger une fois. Forex = dataset
++        de référence (7 majeures) déjà disponible.
++      </div>
++
++      <section className="card">
++        <label className="field-label" style={{ marginTop: 0 }}>Source</label>
++        <select className="input" value={source} onChange={(e) => setSource(e.target.value as "forex" | "deriv")}>
++          <option value="deriv">Deriv — vraies paires du bot</option>
++          <option value="forex">Forex historique (référence)</option>
++        </select>
++
++        <div className="row" style={{ marginTop: 4 }}>
++          <div style={{ flex: 1 }}>
++            <label className="field-label">Paire</label>
++            <select className="input" value={pair} onChange={(e) => setPair(e.target.value)}>
++              {(source === "deriv" ? DERIV_PAIRS : pairs.length ? pairs : [pair]).map((p) => (
++                <option key={p} value={p}>{p}</option>
++              ))}
++            </select>
++          </div>
++          <div style={{ flex: 1 }}>
++            <label className="field-label">Timeframe</label>
++            <select className="input" value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
++              {TIMEFRAMES.map((tf) => <option key={tf} value={tf}>{tf}</option>)}
++            </select>
++          </div>
+         </div>
+ 
+-        <section className="card">
+-          <div className="row">
+-            <div style={{ flex: 1 }}>
+-              <label className="field-label" style={{ marginTop: 0 }}>Paire</label>
+-              <select className="input" value={pair} onChange={(e) => setPair(e.target.value)}>
+-                {(pairs.length ? pairs : [pair]).map((p) => (
+-                  <option key={p} value={p}>{p}</option>
+-                ))}
+-              </select>
++        {source === "deriv" && (
++          <div style={{ marginTop: 10, padding: 12, background: "var(--bg-elevated)", borderRadius: 9 }}>
++            <div className="row">
++              <span style={{ fontSize: 12.5 }}>
++                {cache?.cached ? `✅ En cache : ${cache.bars} bougies` : "⚠️ Aucun historique en cache"}
++              </span>
+             </div>
+-            <div style={{ flex: 1 }}>
+-              <label className="field-label" style={{ marginTop: 0 }}>Timeframe</label>
+-              <select className="input" value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
+-                {TIMEFRAMES.map((tf) => (
+-                  <option key={tf} value={tf}>{tf}</option>
+-                ))}
+-              </select>
++            <div className="row" style={{ marginTop: 8 }}>
++              <input type="number" className="input" style={{ width: 90 }} value={days} onChange={(e) => setDays(Number(e.target.value))} />
++              <span style={{ fontSize: 12, color: "var(--text-faint)" }}>jours</span>
++              <button className="btn" onClick={download} disabled={downloading}>
++                {downloading ? "Téléchargement..." : "Télécharger l'historique"}
++              </button>
+             </div>
++            <p className="field-help">
++              Connexion publique séparée de la session de trading — n&apos;interrompt jamais un trade en cours.
++            </p>
+           </div>
+-          <button className="btn btn-primary" style={{ marginTop: 14 }} onClick={run} disabled={loading}>
+-            {loading ? "Calcul..." : "Lancer le backtest"}
+-          </button>
+-          {error && <p className="toast toast-err" style={{ marginTop: 10 }}>{error}</p>}
+-        </section>
++        )}
+ 
+-        {result && (
+-          <section className="card">
+-            <h2 className="card-title">
+-              {result.pair} · {result.timeframe} · {result.bars} bougies
+-            </h2>
+-            <div className="stat-line"><span>Trades clos</span><b>{result.trades.filter((t) => t.outcome !== "OPEN_AT_END").length}</b></div>
+-            <div className="stat-line">
+-              <span>Winrate</span>
+-              <b>{result.winrate === null ? "n/a" : `${Math.round(result.winrate * 100)}%`}</b>
+-            </div>
+-            <div className="stat-line">
+-              <span>R moyen</span>
+-              <b style={{ color: result.avgR >= 0 ? "var(--green)" : "var(--red)" }}>
+-                {result.avgR >= 0 ? "+" : ""}{result.avgR.toFixed(2)}R
+-              </b>
+-            </div>
+-            <div className="stat-line">
+-              <span>Somme R</span>
+-              <b style={{ color: result.sumR >= 0 ? "var(--green)" : "var(--red)" }}>
+-                {result.sumR >= 0 ? "+" : ""}{result.sumR.toFixed(2)}R
+-              </b>
+-            </div>
+-            <div className="stat-line"><span>Drawdown max</span><b>{result.maxDrawdownR.toFixed(2)}R</b></div>
++        <button className="btn btn-primary" style={{ marginTop: 14 }} onClick={run} disabled={loading}>
++          {loading ? "Calcul..." : "Lancer le backtest"}
++        </button>
++        {error && <p className="toast toast-err" style={{ marginTop: 10 }}>{error}</p>}
++      </section>
+ 
+-            <div className="field-label" style={{ marginTop: 18 }}>
+-              Derniers trades ({Math.min(100, result.trades.length)})
+-            </div>
+-            <div style={{ maxHeight: 320, overflowY: "auto", marginTop: 8 }}>
+-              {result.trades.slice().reverse().map((t, i) => (
+-                <div key={i} className="pos-item" style={{ display: "flex", justifyContent: "space-between" }}>
+-                  <span>{new Date(t.time).toISOString().slice(0, 10)} · {t.direction} @ {t.entry.toFixed(5)}</span>
+-                  <span style={{ color: t.r > 0 ? "var(--green)" : t.r < 0 ? "var(--red)" : "var(--text-faint)" }}>
+-                    {t.outcome} {t.r !== 0 ? `${t.r >= 0 ? "+" : ""}${t.r.toFixed(2)}R` : ""}
+-                  </span>
+-                </div>
+-              ))}
+-            </div>
+-          </section>
+-        )}
+-      </main>
+-    </div>
++      {result && (
++        <section className="card">
++          <h2 className="card-title">{result.pair} · {result.timeframe} · {result.bars} bougies</h2>
++          <div className="stat-line"><span>Trades clos</span><b>{result.trades.filter((t) => t.outcome !== "OPEN_AT_END").length}</b></div>
++          <div className="stat-line">
++            <span>Winrate</span>
++            <b>{result.winrate === null ? "n/a" : `${Math.round(result.winrate * 100)}%`}</b>
++          </div>
++          <div className="stat-line">
++            <span>R moyen</span>
++            <b style={{ color: result.avgR >= 0 ? "var(--green)" : "var(--red)" }}>
++              {result.avgR >= 0 ? "+" : ""}{result.avgR.toFixed(2)}R
++            </b>
++          </div>
++          <div className="stat-line">
++            <span>Somme R</span>
++            <b style={{ color: result.sumR >= 0 ? "var(--green)" : "var(--red)" }}>
++              {result.sumR >= 0 ? "+" : ""}{result.sumR.toFixed(2)}R
++            </b>
++          </div>
++          <div className="stat-line"><span>Drawdown max</span><b>{result.maxDrawdownR.toFixed(2)}R</b></div>
++
++          <div className="field-label" style={{ marginTop: 18 }}>
++            Derniers trades ({Math.min(100, result.trades.length)})
++          </div>
++          <div style={{ maxHeight: 320, overflowY: "auto", marginTop: 8 }}>
++            {result.trades.slice().reverse().map((t, i) => (
++              <div key={i} className="pos-item" style={{ display: "flex", justifyContent: "space-between" }}>
++                <span>{new Date(t.time).toISOString().slice(0, 10)} · {t.direction} @ {t.entry.toFixed(5)}</span>
++                <span style={{ color: t.r > 0 ? "var(--green)" : t.r < 0 ? "var(--red)" : "var(--text-faint)" }}>
++                  {t.outcome} {t.r !== 0 ? `${t.r >= 0 ? "+" : ""}${t.r.toFixed(2)}R` : ""}
++                </span>
++              </div>
++            ))}
++          </div>
++        </section>
++      )}
++    </>
+   );
+ }
+diff --git a/src/app/admin/danger/page.tsx b/src/app/admin/danger/page.tsx
+new file mode 100644
+index 0000000..498ffde
+--- /dev/null
++++ b/src/app/admin/danger/page.tsx
+@@ -0,0 +1,90 @@
++"use client";
++
++import { useEffect, useState } from "react";
++
++type Settings = {
++  derivAccountType: "demo" | "real";
++  realTradingConfirmed: boolean;
++  [key: string]: unknown;
++};
++
++export default function DangerPage() {
++  const [settings, setSettings] = useState<Settings | null>(null);
++  const [realConfirmStep, setRealConfirmStep] = useState(false);
++
++  useEffect(() => {
++    fetch("/api/admin/settings").then((r) => r.json()).then((d) => d.ok && setSettings(d.settings));
++  }, []);
++
++  async function save(patch: Partial<Settings>) {
++    const res = await fetch("/api/admin/settings", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify(patch),
++    });
++    const data = await res.json();
++    if (data.ok) setSettings(data.settings);
++  }
++
++  if (!settings) return <p>Chargement...</p>;
++  const realModeActive = settings.derivAccountType === "real" && settings.realTradingConfirmed;
++
++  return (
++    <>
++      <div className="admin-topbar">
++        <h1 style={{ fontFamily: "var(--display)", fontSize: 22, color: "var(--red-bright)" }}>🔴 Zone réelle</h1>
++      </div>
++
++      {realModeActive && <div className="banner banner-danger">🔴🔴🔴 TRADING RÉEL ACTIF — ARGENT VÉRITABLE 🔴🔴🔴</div>}
++
++      <section className="card danger">
++        <p className="card-sub">
++          Les DEUX réglages ci-dessous doivent être activés ensemble pour trader en argent
++          réel. Un seul suffit à rester en sécurité en démo.
++        </p>
++
++        <label className="field-label">Type de compte</label>
++        <select
++          className="input"
++          value={settings.derivAccountType}
++          onChange={(e) => {
++            if (e.target.value === "real" && !realConfirmStep) { setRealConfirmStep(true); return; }
++            save({ derivAccountType: e.target.value as Settings["derivAccountType"] });
++            setRealConfirmStep(false);
++          }}
++        >
++          <option value="demo">demo</option>
++          <option value="real">real</option>
++        </select>
++
++        {realConfirmStep && (
++          <div className="banner banner-danger" style={{ marginTop: 12, textAlign: "left" }}>
++            <p style={{ margin: "0 0 10px" }}>Confirme : tu vas activer le compte RÉEL (argent véritable).</p>
++            <button className="btn" style={{ background: "#fff", color: "var(--red)", marginRight: 8 }}
++              onClick={() => { save({ derivAccountType: "real" }); setRealConfirmStep(false); }}>
++              Oui, je confirme
++            </button>
++            <button className="btn btn-ghost" style={{ borderColor: "#fff", color: "#fff" }}
++              onClick={() => setRealConfirmStep(false)}>
++              Annuler
++            </button>
++          </div>
++        )}
++
++        <div className="toggle-row" style={{ marginTop: 14 }}>
++          <div className="toggle-label">Je confirme vouloir trader en argent réel</div>
++          <div
++            className={`switch ${settings.realTradingConfirmed ? "on" : ""}`}
++            role="switch"
++            aria-checked={settings.realTradingConfirmed}
++            onClick={() => {
++              const v = !settings.realTradingConfirmed;
++              if (v && !confirm("Confirmer l'activation du trading en argent RÉEL ?")) return;
++              save({ realTradingConfirmed: v });
++            }}
++          />
++        </div>
++      </section>
++    </>
++  );
++}
+diff --git a/src/app/admin/layout.tsx b/src/app/admin/layout.tsx
+new file mode 100644
+index 0000000..12e6dec
+--- /dev/null
++++ b/src/app/admin/layout.tsx
+@@ -0,0 +1,53 @@
++"use client";
++
++import { usePathname, useRouter } from "next/navigation";
++import "./admin.css";
++
++const NAV = [
++  { href: "/admin", label: "📊 Dashboard" },
++  { href: "/admin/settings", label: "⚙️ Réglages bots" },
++  { href: "/admin/learning", label: "🧠 Apprentissage" },
++  { href: "/admin/templates", label: "✉️ Templates" },
++  { href: "/admin/subscribers", label: "👥 Abonnés" },
++  { href: "/admin/backtest", label: "🧪 Backtest" },
++  { href: "/admin/danger", label: "🔴 Zone réelle" },
++];
++
++export default function AdminLayout({ children }: { children: React.ReactNode }) {
++  const pathname = usePathname();
++  const router = useRouter();
++
++  if (pathname === "/admin/login") {
++    return <div className="admin-root">{children}</div>;
++  }
++
++  async function logout() {
++    await fetch("/api/admin/logout", { method: "POST" });
++    router.push("/admin/login");
++  }
++
++  return (
++    <div className="admin-root">
++      <div className="dash-shell">
++        <aside className="dash-sidebar">
++          <div className="admin-brand"><span className="dot" />TradeSk</div>
++          <nav className="dash-nav">
++            {NAV.map((item) => (
++              <a key={item.href} href={item.href} className={pathname === item.href ? "active" : ""}>
++                {item.label}
++              </a>
++            ))}
++          </nav>
++          <div style={{ marginTop: "auto" }}>
++            <button onClick={logout} className="btn btn-ghost" style={{ width: "100%" }}>
++              Déconnexion
++            </button>
++          </div>
++        </aside>
++        <div className="dash-content">
++          <div className="dash-inner">{children}</div>
++        </div>
++      </div>
++    </div>
++  );
++}
+diff --git a/src/app/admin/learning/page.tsx b/src/app/admin/learning/page.tsx
+new file mode 100644
+index 0000000..02ed966
+--- /dev/null
++++ b/src/app/admin/learning/page.tsx
+@@ -0,0 +1,163 @@
++"use client";
++
++import { useEffect, useState } from "react";
++
++type Rules = Record<string, number>;
++
++export default function LearningPage() {
++  const [rules, setRulesState] = useState<Rules | null>(null);
++  const [pausedUntil, setPausedUntil] = useState<string | null>(null);
++  const [lossStreak, setLossStreak] = useState(0);
++  const [running, setRunning] = useState(false);
++  const [report, setReport] = useState<{ summary: string; insights: string[] } | null>(null);
++  const [savedAt, setSavedAt] = useState<number | null>(null);
++
++  async function load() {
++    const res = await fetch("/api/admin/rules").then((r) => r.json());
++    if (res.ok) {
++      setRulesState(res.rules);
++      setPausedUntil(res.pausedUntil || null);
++      setLossStreak(res.lossStreak);
++    }
++  }
++
++  useEffect(() => {
++    load();
++  }, []);
++
++  async function save(patch: Rules) {
++    const res = await fetch("/api/admin/rules", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ patch }),
++    });
++    const data = await res.json();
++    if (data.ok) {
++      setRulesState(data.rules);
++      setSavedAt(Date.now());
++      setTimeout(() => setSavedAt(null), 2000);
++    }
++  }
++
++  async function runNow() {
++    setRunning(true);
++    setReport(null);
++    try {
++      const res = await fetch("/api/admin/rules", {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({ action: "run" }),
++      });
++      const data = await res.json();
++      if (data.ok) {
++        setRulesState(data.rules);
++        setReport(data.report);
++      }
++    } finally {
++      setRunning(false);
++    }
++  }
++
++  async function unpause() {
++    await fetch("/api/admin/rules", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ action: "unpause" }),
++    });
++    load();
++  }
++
++  if (!rules) return <p>Chargement...</p>;
++  const frozen = rules.learning_enabled < 1;
++  const isPaused = pausedUntil && new Date(pausedUntil) > new Date();
++
++  return (
++    <>
++      <div className="admin-topbar">
++        <h1 style={{ fontFamily: "var(--display)", fontSize: 22 }}>Apprentissage</h1>
++      </div>
++
++      <div className="banner banner-info">
++        Ces règles sont les mêmes que celles ajustées automatiquement par la commande
++        Telegram <code>/learn</code> — modifier ici équivaut à modifier là-bas, aucune
++        divergence possible.
++      </div>
++
++      {isPaused && (
++        <div className="banner banner-danger">
++          Bot en pause jusqu&apos;au {new Date(pausedUntil!).toLocaleString("fr-FR")}
++          <div style={{ marginTop: 8 }}>
++            <button className="btn" style={{ background: "#fff", color: "var(--red)" }} onClick={unpause}>
++              Lever la pause maintenant
++            </button>
++          </div>
++        </div>
++      )}
++
++      {savedAt && <div className="toast toast-ok">Enregistré ✓</div>}
++
++      <section className="card">
++        <h2 className="card-title">Lancer maintenant</h2>
++        <div className="stat-line"><span>Loss streak actuelle</span><b>{lossStreak}</b></div>
++        <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={runNow} disabled={running}>
++          {running ? "Analyse..." : "Lancer /learn maintenant"}
++        </button>
++        {report && (
++          <div style={{ marginTop: 12, fontSize: 13 }}>
++            <p style={{ color: "var(--text-soft)" }}>{report.summary}</p>
++            {report.insights.map((ins, i) => (
++              <p key={i} className="field-help">• {ins}</p>
++            ))}
++          </div>
++        )}
++      </section>
++
++      <section className="card">
++        <h2 className="card-title">Réglages</h2>
++
++        <div className="toggle-row">
++          <div>
++            <div className="toggle-label">Apprentissage actif</div>
++            <div className="toggle-sub">Désactivé = /learn et cette page ne changent plus rien automatiquement.</div>
++          </div>
++          <div
++            className={`switch ${!frozen ? "on" : ""}`}
++            role="switch"
++            aria-checked={!frozen}
++            onClick={() => save({ learning_enabled: frozen ? 1 : 0 })}
++          />
++        </div>
++
++        <label className="field-label">Confiance minimum pour publier (2-5)</label>
++        <input type="number" step="0.5" min={2} max={5} className="input" value={rules.min_confidence}
++          onChange={(e) => setRulesState({ ...rules, min_confidence: Number(e.target.value) })}
++          onBlur={() => save({ min_confidence: rules.min_confidence })} />
++
++        <label className="field-label">Max trades/jour</label>
++        <input type="number" min={1} className="input" value={rules.max_trades_per_day}
++          onChange={(e) => setRulesState({ ...rules, max_trades_per_day: Number(e.target.value) })}
++          onBlur={() => save({ max_trades_per_day: rules.max_trades_per_day })} />
++
++        <label className="field-label">Pause après N pertes d&apos;affilée</label>
++        <input type="number" min={1} className="input" value={rules.pause_after_loss_streak}
++          onChange={(e) => setRulesState({ ...rules, pause_after_loss_streak: Number(e.target.value) })}
++          onBlur={() => save({ pause_after_loss_streak: rules.pause_after_loss_streak })} />
++
++        <label className="field-label">Durée de la pause (heures)</label>
++        <input type="number" min={1} className="input" value={rules.pause_hours}
++          onChange={(e) => setRulesState({ ...rules, pause_hours: Number(e.target.value) })}
++          onBlur={() => save({ pause_hours: rules.pause_hours })} />
++
++        <label className="field-label">Risque par trade par défaut (%)</label>
++        <input type="number" step="0.1" min={0.1} className="input" value={rules.risk_pct_default}
++          onChange={(e) => setRulesState({ ...rules, risk_pct_default: Number(e.target.value) })}
++          onBlur={() => save({ risk_pct_default: rules.risk_pct_default })} />
++
++        <label className="field-label">Risque par trade après une pause (%)</label>
++        <input type="number" step="0.1" min={0.1} className="input" value={rules.risk_pct_after_drawdown}
++          onChange={(e) => setRulesState({ ...rules, risk_pct_after_drawdown: Number(e.target.value) })}
++          onBlur={() => save({ risk_pct_after_drawdown: rules.risk_pct_after_drawdown })} />
++      </section>
++    </>
++  );
++}
+diff --git a/src/app/admin/login/page.tsx b/src/app/admin/login/page.tsx
+index e16855c..0661f2d 100644
+--- a/src/app/admin/login/page.tsx
++++ b/src/app/admin/login/page.tsx
+@@ -2,7 +2,6 @@
+ 
+ import { useState } from "react";
+ import { useRouter } from "next/navigation";
+-import "../admin.css";
+ 
+ export default function AdminLoginPage() {
+   const router = useRouter();
+@@ -35,13 +34,12 @@ export default function AdminLoginPage() {
+   }
+ 
+   return (
+-    <div className="admin-root">
+-      <main className="login-shell">
+-        <div className="admin-brand" style={{ marginBottom: 20 }}>
+-          <span className="dot" />
+-          TradeSk Admin
+-        </div>
+-        <div className="login-card">
++    <main className="login-shell">
++      <div className="admin-brand" style={{ marginBottom: 20 }}>
++        <span className="dot" />
++        TradeSk Admin
++      </div>
++      <div className="login-card">
+           <form onSubmit={onSubmit}>
+             <label className="field-label" style={{ marginTop: 0 }}>Mot de passe</label>
+             <input
+@@ -60,10 +58,9 @@ export default function AdminLoginPage() {
+             >
+               {loading ? "Connexion..." : "Se connecter"}
+             </button>
+-            {error && <p className="toast toast-err" style={{ marginTop: 14, width: "100%" }}>{error}</p>}
+-          </form>
+-        </div>
+-      </main>
+-    </div>
++          {error && <p className="toast toast-err" style={{ marginTop: 14, width: "100%" }}>{error}</p>}
++        </form>
++      </div>
++    </main>
+   );
+ }
+diff --git a/src/app/admin/page.tsx b/src/app/admin/page.tsx
+index 4cf94c5..2addbb0 100644
+--- a/src/app/admin/page.tsx
++++ b/src/app/admin/page.tsx
+@@ -1,28 +1,6 @@
+ "use client";
+ 
+ import { useEffect, useState } from "react";
+-import { useRouter } from "next/navigation";
+-import "./admin.css";
+-
+-type AppSettings = {
+-  analyzePairs: string[];
+-  analyzeTimeframe: string;
+-  analyzeCooldownMinutes: number;
+-  autoExpireHours: number;
+-  smcCooldownMinutes: number;
+-  smcPostEmpty: boolean;
+-  smcSelectorThreshold: number;
+-  demoExecution: boolean;
+-  demoProvider: "auto" | "deriv" | "binance";
+-  demoNotionalUsdt: number;
+-  demoLeverage: number;
+-  derivAccountType: "demo" | "real";
+-  realTradingConfirmed: boolean;
+-  demoOnePositionPerSymbol: boolean;
+-  cryptoSignalTemplate: string;
+-  xauSignalTemplate: string;
+-  v100SignalTemplate: string;
+-};
+ 
+ type StatusResponse = {
+   ok: boolean;
+@@ -33,53 +11,26 @@ type StatusResponse = {
+   error?: string;
+ };
+ 
+-const TEMPLATE_TOKENS: Record<"cryptoSignalTemplate" | "xauSignalTemplate" | "v100SignalTemplate", string[]> = {
+-  cryptoSignalTemplate: [
+-    "pair", "timeframe", "direction", "directionEmoji", "price", "ema20", "ema50",
+-    "rsi", "changePct", "entryLow", "entryHigh", "stopLoss", "tp1", "tp2",
+-    "tradeLines", "setup", "confidenceStars", "rationale", "signalIdLine",
+-  ],
+-  xauSignalTemplate: [
+-    "direction", "directionEmoji", "timeframe", "setup", "entryLow", "entryHigh",
+-    "stopLoss", "tp1", "tp2", "tp3", "rr", "time",
+-  ],
+-  v100SignalTemplate: [
+-    "direction", "directionEmoji", "timeframe", "setup", "oteLow", "oteHigh",
+-    "entryLow", "entryHigh", "stopLoss", "slNote", "tp1", "tp2", "tp3", "rr",
+-    "time", "confluence",
+-  ],
+-};
+-
+-function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
++function Sparkline({ values }: { values: number[] }) {
++  if (values.length < 2) return null;
++  const min = Math.min(...values), max = Math.max(...values);
++  const range = max - min || 1;
++  const points = values
++    .map((v, i) => `${(i / (values.length - 1)) * 100},${30 - ((v - min) / range) * 28}`)
++    .join(" ");
++  const up = values[values.length - 1] >= values[0];
+   return (
+-    <div
+-      className={`switch ${on ? "on" : ""}`}
+-      onClick={() => onChange(!on)}
+-      role="switch"
+-      aria-checked={on}
+-    />
++    <svg className="sparkline" viewBox="0 0 100 32" preserveAspectRatio="none">
++      <polyline points={points} fill="none" stroke={up ? "var(--green)" : "var(--red)"} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
++    </svg>
+   );
+ }
+ 
+-export default function AdminPage() {
+-  const router = useRouter();
+-  const [settings, setSettings] = useState<AppSettings | null>(null);
+-  const [pairsInput, setPairsInput] = useState("");
++export default function DashboardPage() {
+   const [status, setStatus] = useState<StatusResponse | null>(null);
+-  const [saving, setSaving] = useState(false);
+-  const [savedAt, setSavedAt] = useState<number | null>(null);
+-  const [error, setError] = useState<string | null>(null);
+-  const [realConfirmStep, setRealConfirmStep] = useState(false);
+ 
+   async function load() {
+-    const [sRes, stRes] = await Promise.all([
+-      fetch("/api/admin/settings").then((r) => r.json()),
+-      fetch("/api/admin/status").then((r) => r.json()),
+-    ]);
+-    if (sRes.ok) {
+-      setSettings(sRes.settings);
+-      setPairsInput(sRes.settings.analyzePairs.join(", "));
+-    }
++    const stRes = await fetch("/api/admin/status").then((r) => r.json());
+     setStatus(stRes);
+   }
+ 
+@@ -87,333 +38,80 @@ export default function AdminPage() {
+     load();
+   }, []);
+ 
+-  async function save(patch: Partial<AppSettings>) {
+-    setSaving(true);
+-    setError(null);
+-    try {
+-      const res = await fetch("/api/admin/settings", {
+-        method: "POST",
+-        headers: { "Content-Type": "application/json" },
+-        body: JSON.stringify(patch),
+-      });
+-      const data = await res.json();
+-      if (!res.ok || !data.ok) {
+-        setError(data.error || "Échec de sauvegarde");
+-      } else {
+-        setSettings(data.settings);
+-        setSavedAt(Date.now());
+-        setTimeout(() => setSavedAt(null), 2000);
+-      }
+-    } catch {
+-      setError("Erreur réseau");
+-    } finally {
+-      setSaving(false);
+-    }
+-  }
+-
+-  async function logout() {
+-    await fetch("/api/admin/logout", { method: "POST" });
+-    router.push("/admin/login");
+-  }
+-
+-  if (!settings) {
+-    return (
+-      <div className="admin-root">
+-        <main className="admin-shell">Chargement...</main>
+-      </div>
+-    );
+-  }
+-
+-  const realModeActive = settings.derivAccountType === "real" && settings.realTradingConfirmed;
++  const positions = status?.positions ?? [];
++  const totalUPnl = positions.reduce((s, p) => s + p.unrealizedProfit, 0);
++  const walletHistory = status?.account
++    ? [status.account.walletBalance - totalUPnl, status.account.walletBalance]
++    : [];
+ 
+   return (
+-    <div className="admin-root">
+-      <main className="admin-shell">
+-        <div className="admin-topbar">
+-          <div className="admin-brand">
+-            <span className="dot" />
+-            TradeSk Admin
+-          </div>
+-          <button onClick={logout} className="btn btn-ghost">Déconnexion</button>
+-        </div>
+-
+-        {realModeActive && (
+-          <div className="banner banner-danger">
+-            🔴🔴🔴 TRADING RÉEL ACTIF — ARGENT VÉRITABLE 🔴🔴🔴
+-          </div>
+-        )}
+-
+-        {(savedAt || saving || error) && (
+-          <div className={`toast ${error ? "toast-err" : "toast-ok"}`}>
+-            {error || (saving ? "Sauvegarde..." : "Enregistré ✓")}
+-          </div>
++    <>
++      <div className="admin-topbar">
++        <h1 style={{ fontFamily: "var(--display)", fontSize: 22 }}>Dashboard</h1>
++        {status?.enabled && (
++          <span className={`pill ${status.realMode ? "pill-real" : "pill-demo"}`}>
++            {status.realMode ? "🔴 réel" : "demo"}
++          </span>
+         )}
++      </div>
+ 
+-        <section className="card">
+-          <h2 className="card-title">
+-            Statut compte
+-            {status?.enabled && (
+-              <span className={`pill ${status.realMode ? "pill-real" : "pill-demo"}`}>
+-                {status.realMode ? "réel" : "demo"}
+-              </span>
+-            )}
+-          </h2>
+-          {!status?.enabled && <p className="card-sub">Exécution démo/réelle désactivée.</p>}
+-          {status?.enabled && status.error && (
+-            <p className="toast toast-err">Erreur : {status.error}</p>
+-          )}
+-          {status?.enabled && status.account && (
+-            <div>
+-              <div className="stat-line"><span>Solde</span><b>{status.account.walletBalance.toFixed(2)}</b></div>
+-              <div className="stat-line"><span>Disponible</span><b>{status.account.availableBalance.toFixed(2)}</b></div>
+-              <div className="stat-line">
+-                <span>PnL non réalisé</span>
+-                <b style={{ color: status.account.unrealizedProfit >= 0 ? "var(--green)" : "var(--red)" }}>
+-                  {status.account.unrealizedProfit >= 0 ? "+" : ""}
+-                  {status.account.unrealizedProfit.toFixed(2)}
+-                </b>
+-              </div>
+-              <div style={{ marginTop: 10 }}>
+-                <div className="field-label" style={{ margin: "0 0 6px" }}>
+-                  Positions ouvertes ({status.positions?.length ?? 0})
+-                </div>
+-                {status.positions?.map((p, i) => (
+-                  <div key={i} className="pos-item">
+-                    • {p.symbol} @ {p.entryPrice} (
+-                    {p.unrealizedProfit >= 0 ? "+" : ""}
+-                    {p.unrealizedProfit.toFixed(2)})
+-                  </div>
+-                ))}
+-              </div>
+-            </div>
+-          )}
+-          <button onClick={load} className="btn" style={{ marginTop: 14 }}>Rafraîchir</button>
+-        </section>
+-
+-        <section className="card">
+-          <h2 className="card-title">Bot crypto</h2>
+-          <p className="card-sub">BTC/ETH/SOL... via Binance Futures</p>
+-
+-          <label className="field-label">Paires tradées</label>
+-          <input
+-            className="input"
+-            value={pairsInput}
+-            onChange={(e) => setPairsInput(e.target.value)}
+-            onBlur={() =>
+-              save({
+-                analyzePairs: pairsInput.split(",").map((p) => p.trim().toUpperCase()).filter(Boolean),
+-              })
+-            }
+-            placeholder="BTCUSDT, ETHUSDT, SOLUSDT"
+-          />
+-          <p className="field-help">Séparées par des virgules.</p>
+-
+-          <label className="field-label">Timeframe</label>
+-          <select
+-            className="input"
+-            value={settings.analyzeTimeframe}
+-            onChange={(e) => save({ analyzeTimeframe: e.target.value })}
+-          >
+-            {["15m", "30m", "1h", "2h", "4h", "1d"].map((tf) => (
+-              <option key={tf} value={tf}>{tf}</option>
+-            ))}
+-          </select>
+-
+-          <label className="field-label">Cooldown entre 2 signaux (minutes)</label>
+-          <input
+-            type="number" className="input"
+-            value={settings.analyzeCooldownMinutes}
+-            onChange={(e) => setSettings({ ...settings, analyzeCooldownMinutes: Number(e.target.value) })}
+-            onBlur={() => save({ analyzeCooldownMinutes: settings.analyzeCooldownMinutes })}
+-          />
++      {status?.realMode && <div className="banner banner-danger">🔴 TRADING RÉEL ACTIF — ARGENT VÉRITABLE</div>}
+ 
+-          <label className="field-label">Expiration auto d&apos;un signal (heures)</label>
+-          <input
+-            type="number" className="input"
+-            value={settings.autoExpireHours}
+-            onChange={(e) => setSettings({ ...settings, autoExpireHours: Number(e.target.value) })}
+-            onBlur={() => save({ autoExpireHours: settings.autoExpireHours })}
+-          />
+-        </section>
+-
+-        <section className="card">
+-          <h2 className="card-title">Bot SMC classique</h2>
+-          <p className="card-sub">XAUUSD / V100 — publication continue</p>
++      {!status?.enabled && (
++        <div className="banner banner-info">
++          Exécution désactivée. Active-la dans <a href="/admin/settings" style={{ color: "var(--green-bright)" }}>Réglages bots</a>.
++        </div>
++      )}
+ 
+-          <label className="field-label">Cooldown anti-spam (minutes)</label>
+-          <input
+-            type="number" className="input"
+-            value={settings.smcCooldownMinutes}
+-            onChange={(e) => setSettings({ ...settings, smcCooldownMinutes: Number(e.target.value) })}
+-            onBlur={() => save({ smcCooldownMinutes: settings.smcCooldownMinutes })}
+-          />
++      {status?.enabled && status.error && <p className="toast toast-err">{status.error}</p>}
+ 
+-          <div className="toggle-row" style={{ marginTop: 14 }}>
+-            <div>
+-              <div className="toggle-label">Poster &quot;scan terminé&quot; même sans setup</div>
+-            </div>
+-            <Toggle on={settings.smcPostEmpty} onChange={(v) => save({ smcPostEmpty: v })} />
++      {status?.enabled && status.account && (
++        <div className="kpi-grid">
++          <div className="kpi-card">
++            <div className="kpi-label">Solde</div>
++            <div className="kpi-value">{status.account.walletBalance.toFixed(2)}</div>
++            <Sparkline values={walletHistory} />
+           </div>
+-        </section>
+-
+-        <section className="card">
+-          <h2 className="card-title">Sélecteur SMC</h2>
+-          <p className="card-sub">3 créneaux/jour, publication score-gated</p>
+-
+-          <label className="field-label">Seuil de publication immédiate (0-100)</label>
+-          <input
+-            type="number" className="input"
+-            value={settings.smcSelectorThreshold}
+-            onChange={(e) => setSettings({ ...settings, smcSelectorThreshold: Number(e.target.value) })}
+-            onBlur={() => save({ smcSelectorThreshold: settings.smcSelectorThreshold })}
+-          />
+-          <p className="field-help">
+-            Un setup ≥ ce score est publié immédiatement. Sinon, le meilleur setup du créneau
+-            est publié en fin de fenêtre.
+-          </p>
+-        </section>
+-
+-        <section className="card">
+-          <h2 className="card-title">Exécution des trades</h2>
+-
+-          <div className="toggle-row">
+-            <div className="toggle-label">Exécution automatique</div>
+-            <Toggle on={settings.demoExecution} onChange={(v) => save({ demoExecution: v })} />
++          <div className="kpi-card">
++            <div className="kpi-label">Disponible</div>
++            <div className="kpi-value">{status.account.availableBalance.toFixed(2)}</div>
+           </div>
+-          <div className="toggle-row">
+-            <div>
+-              <div className="toggle-label">1 position max par symbole</div>
+-              <div className="toggle-sub">Anti-doublon — désactiver n&apos;est pas recommandé.</div>
++          <div className="kpi-card">
++            <div className="kpi-label">PnL non réalisé</div>
++            <div className="kpi-value" style={{ color: totalUPnl >= 0 ? "var(--green)" : "var(--red)" }}>
++              {totalUPnl >= 0 ? "+" : ""}{totalUPnl.toFixed(2)}
+             </div>
+-            <Toggle
+-              on={settings.demoOnePositionPerSymbol}
+-              onChange={(v) => save({ demoOnePositionPerSymbol: v })}
+-            />
+           </div>
++          <div className="kpi-card">
++            <div className="kpi-label">Positions ouvertes</div>
++            <div className="kpi-value">{positions.length}</div>
++          </div>
++        </div>
++      )}
+ 
+-          <label className="field-label">Provider</label>
+-          <select
+-            className="input"
+-            value={settings.demoProvider}
+-            onChange={(e) => save({ demoProvider: e.target.value as AppSettings["demoProvider"] })}
+-          >
+-            <option value="auto">auto (Deriv en priorité)</option>
+-            <option value="deriv">deriv</option>
+-            <option value="binance">binance</option>
+-          </select>
+-
+-          <label className="field-label">Montant par trade</label>
+-          <input
+-            type="number" className="input"
+-            value={settings.demoNotionalUsdt}
+-            onChange={(e) => setSettings({ ...settings, demoNotionalUsdt: Number(e.target.value) })}
+-            onBlur={() => save({ demoNotionalUsdt: settings.demoNotionalUsdt })}
+-          />
+-
+-          <label className="field-label">Levier / multiplicateur</label>
+-          <input
+-            type="number" className="input"
+-            value={settings.demoLeverage}
+-            onChange={(e) => setSettings({ ...settings, demoLeverage: Number(e.target.value) })}
+-            onBlur={() => save({ demoLeverage: settings.demoLeverage })}
+-          />
+-          <p className="field-help">
+-            Pour Deriv Multipliers, ajusté automatiquement à la valeur acceptée la plus proche.
+-          </p>
+-        </section>
+-
++      {positions.length > 0 && (
+         <section className="card">
+-          <h2 className="card-title">Templates Telegram</h2>
+-          <p className="card-sub">
+-            Tokens <code>{"{comme_ça}"}</code> remplacés au moment de l&apos;envoi. Vide = format par défaut.
+-          </p>
+-
+-          {(
+-            [
+-              ["cryptoSignalTemplate", "Signal bot crypto (BTC/ETH/SOL...)"],
+-              ["xauSignalTemplate", "Signal XAUUSD (SMC)"],
+-              ["v100SignalTemplate", "Signal V100 (SMC)"],
+-            ] as const
+-          ).map(([key, title]) => (
+-            <div key={key} style={{ marginTop: 16 }}>
+-              <div className="row">
+-                <label className="field-label" style={{ margin: 0 }}>{title}</label>
+-                <button
+-                  className="reset-link"
+-                  onClick={() => save({ [key]: "" } as Partial<AppSettings>)}
+-                >
+-                  Réinitialiser au défaut
+-                </button>
+-              </div>
+-              <textarea
+-                className="input"
+-                value={settings[key]}
+-                onChange={(e) => setSettings({ ...settings, [key]: e.target.value })}
+-                onBlur={() => save({ [key]: settings[key] } as Partial<AppSettings>)}
+-              />
+-              <p className="field-help">
+-                Tokens dispo : {TEMPLATE_TOKENS[key].map((t) => `{${t}}`).join(", ")}
+-              </p>
++          <h2 className="card-title">Positions en cours</h2>
++          {positions.map((p, i) => (
++            <div key={i} className="stat-line">
++              <span>{p.symbol} @ {p.entryPrice}</span>
++              <b style={{ color: p.unrealizedProfit >= 0 ? "var(--green)" : "var(--red)" }}>
++                {p.unrealizedProfit >= 0 ? "+" : ""}{p.unrealizedProfit.toFixed(2)}
++              </b>
+             </div>
+           ))}
+         </section>
+-
+-        <section className="card danger">
+-          <h2 className="card-title" style={{ color: "var(--red-bright)" }}>⚠️ Zone dangereuse — Argent réel</h2>
+-          <p className="card-sub">
+-            Les DEUX réglages ci-dessous doivent être activés ensemble pour trader en argent
+-            réel. Un seul suffit à rester en sécurité en démo.
+-          </p>
+-
+-          <label className="field-label">Type de compte</label>
+-          <select
+-            className="input"
+-            value={settings.derivAccountType}
+-            onChange={(e) => {
+-              if (e.target.value === "real" && !realConfirmStep) {
+-                setRealConfirmStep(true);
+-                return;
+-              }
+-              save({ derivAccountType: e.target.value as AppSettings["derivAccountType"] });
+-              setRealConfirmStep(false);
+-            }}
+-          >
+-            <option value="demo">demo</option>
+-            <option value="real">real</option>
+-          </select>
+-
+-          {realConfirmStep && (
+-            <div className="banner banner-danger" style={{ marginTop: 12, textAlign: "left" }}>
+-              <p style={{ margin: "0 0 10px" }}>Confirme : tu vas activer le compte RÉEL (argent véritable).</p>
+-              <button
+-                className="btn"
+-                style={{ background: "#fff", color: "var(--red)", marginRight: 8 }}
+-                onClick={() => { save({ derivAccountType: "real" }); setRealConfirmStep(false); }}
+-              >
+-                Oui, je confirme
+-              </button>
+-              <button
+-                className="btn btn-ghost"
+-                style={{ borderColor: "#fff", color: "#fff" }}
+-                onClick={() => setRealConfirmStep(false)}
+-              >
+-                Annuler
+-              </button>
+-            </div>
+-          )}
+-
+-          <div className="toggle-row" style={{ marginTop: 14 }}>
+-            <div className="toggle-label">Je confirme vouloir trader en argent réel</div>
+-            <Toggle
+-              on={settings.realTradingConfirmed}
+-              onChange={(v) => {
+-                if (v && !confirm("Confirmer l'activation du trading en argent RÉEL ?")) return;
+-                save({ realTradingConfirmed: v });
+-              }}
+-            />
+-          </div>
+-        </section>
+-      </main>
+-    </div>
++      )}
++
++      <section className="card">
++        <h2 className="card-title">Accès rapide</h2>
++        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
++          <a className="btn" href="/admin/settings">Réglages bots</a>
++          <a className="btn" href="/admin/templates">Templates Telegram</a>
++          <a className="btn" href="/admin/subscribers">Abonnés</a>
++          <a className="btn" href="/admin/backtest">Lancer un backtest</a>
++        </div>
++      </section>
++    </>
+   );
+ }
+diff --git a/src/app/admin/settings/page.tsx b/src/app/admin/settings/page.tsx
+new file mode 100644
+index 0000000..f55bd00
+--- /dev/null
++++ b/src/app/admin/settings/page.tsx
+@@ -0,0 +1,178 @@
++"use client";
++
++import { useEffect, useState } from "react";
++
++type AppSettings = {
++  analyzePairs: string[];
++  analyzeTimeframe: string;
++  analyzeCooldownMinutes: number;
++  autoExpireHours: number;
++  cryptoPriceSource: "binance" | "deriv";
++  smcCooldownMinutes: number;
++  smcPostEmpty: boolean;
++  smcSelectorThreshold: number;
++  demoExecution: boolean;
++  demoProvider: "auto" | "deriv" | "binance";
++  demoNotionalUsdt: number;
++  demoLeverage: number;
++  demoOnePositionPerSymbol: boolean;
++  [key: string]: unknown;
++};
++
++function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
++  return <div className={`switch ${on ? "on" : ""}`} onClick={() => onChange(!on)} role="switch" aria-checked={on} />;
++}
++
++export default function SettingsPage() {
++  const [settings, setSettings] = useState<AppSettings | null>(null);
++  const [pairsInput, setPairsInput] = useState("");
++  const [saving, setSaving] = useState(false);
++  const [savedAt, setSavedAt] = useState<number | null>(null);
++  const [error, setError] = useState<string | null>(null);
++
++  useEffect(() => {
++    fetch("/api/admin/settings").then((r) => r.json()).then((d) => {
++      if (d.ok) {
++        setSettings(d.settings);
++        setPairsInput(d.settings.analyzePairs.join(", "));
++      }
++    });
++  }, []);
++
++  async function save(patch: Partial<AppSettings>) {
++    setSaving(true);
++    setError(null);
++    try {
++      const res = await fetch("/api/admin/settings", {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify(patch),
++      });
++      const data = await res.json();
++      if (!res.ok || !data.ok) setError(data.error || "Échec de sauvegarde");
++      else {
++        setSettings(data.settings);
++        setSavedAt(Date.now());
++        setTimeout(() => setSavedAt(null), 2000);
++      }
++    } catch {
++      setError("Erreur réseau");
++    } finally {
++      setSaving(false);
++    }
++  }
++
++  if (!settings) return <p>Chargement...</p>;
++
++  return (
++    <>
++      <div className="admin-topbar">
++        <h1 style={{ fontFamily: "var(--display)", fontSize: 22 }}>Réglages bots</h1>
++      </div>
++
++      {(savedAt || saving || error) && (
++        <div className={`toast ${error ? "toast-err" : "toast-ok"}`}>
++          {error || (saving ? "Sauvegarde..." : "Enregistré ✓")}
++        </div>
++      )}
++
++      <section className="card">
++        <h2 className="card-title">Bot crypto</h2>
++        <p className="card-sub">BTC/ETH/SOL...</p>
++
++        <label className="field-label" style={{ marginTop: 0 }}>Paires tradées</label>
++        <input
++          className="input"
++          value={pairsInput}
++          onChange={(e) => setPairsInput(e.target.value)}
++          onBlur={() => save({ analyzePairs: pairsInput.split(",").map((p) => p.trim().toUpperCase()).filter(Boolean) })}
++          placeholder="BTCUSDT, ETHUSDT, SOLUSDT"
++        />
++        <p className="field-help">Séparées par des virgules.</p>
++
++        <label className="field-label">Timeframe</label>
++        <select className="input" value={settings.analyzeTimeframe} onChange={(e) => save({ analyzeTimeframe: e.target.value })}>
++          {["15m", "30m", "1h", "2h", "4h", "1d"].map((tf) => <option key={tf} value={tf}>{tf}</option>)}
++        </select>
++
++        <label className="field-label">Cooldown entre 2 signaux (minutes)</label>
++        <input type="number" className="input" value={settings.analyzeCooldownMinutes}
++          onChange={(e) => setSettings({ ...settings, analyzeCooldownMinutes: Number(e.target.value) })}
++          onBlur={() => save({ analyzeCooldownMinutes: settings.analyzeCooldownMinutes })} />
++
++        <label className="field-label">Expiration auto d&apos;un signal (heures)</label>
++        <input type="number" className="input" value={settings.autoExpireHours}
++          onChange={(e) => setSettings({ ...settings, autoExpireHours: Number(e.target.value) })}
++          onBlur={() => save({ autoExpireHours: settings.autoExpireHours })} />
++
++        <label className="field-label">Source des prix</label>
++        <select className="input" value={settings.cryptoPriceSource}
++          onChange={(e) => save({ cryptoPriceSource: e.target.value as AppSettings["cryptoPriceSource"] })}>
++          <option value="deriv">Deriv (même source que l&apos;exécution, recommandé)</option>
++          <option value="binance">Binance</option>
++        </select>
++        <p className="field-help">Deriv évite l&apos;écart entre le prix du signal et celui de l&apos;exécution.</p>
++      </section>
++
++      <section className="card">
++        <h2 className="card-title">Bot SMC classique</h2>
++        <p className="card-sub">XAUUSD / V100 — publication continue</p>
++
++        <label className="field-label" style={{ marginTop: 0 }}>Cooldown anti-spam (minutes)</label>
++        <input type="number" className="input" value={settings.smcCooldownMinutes}
++          onChange={(e) => setSettings({ ...settings, smcCooldownMinutes: Number(e.target.value) })}
++          onBlur={() => save({ smcCooldownMinutes: settings.smcCooldownMinutes })} />
++
++        <div className="toggle-row" style={{ marginTop: 14 }}>
++          <div className="toggle-label">Poster &quot;scan terminé&quot; même sans setup</div>
++          <Toggle on={settings.smcPostEmpty} onChange={(v) => save({ smcPostEmpty: v })} />
++        </div>
++      </section>
++
++      <section className="card">
++        <h2 className="card-title">Sélecteur SMC</h2>
++        <p className="card-sub">3 créneaux/jour, publication score-gated</p>
++
++        <label className="field-label" style={{ marginTop: 0 }}>Seuil de publication immédiate (0-100)</label>
++        <input type="number" className="input" value={settings.smcSelectorThreshold}
++          onChange={(e) => setSettings({ ...settings, smcSelectorThreshold: Number(e.target.value) })}
++          onBlur={() => save({ smcSelectorThreshold: settings.smcSelectorThreshold })} />
++      </section>
++
++      <section className="card">
++        <h2 className="card-title">Exécution des trades</h2>
++
++        <div className="toggle-row">
++          <div className="toggle-label">Exécution automatique</div>
++          <Toggle on={settings.demoExecution} onChange={(v) => save({ demoExecution: v })} />
++        </div>
++        <div className="toggle-row">
++          <div>
++            <div className="toggle-label">1 position max par symbole</div>
++            <div className="toggle-sub">Anti-doublon — désactiver n&apos;est pas recommandé.</div>
++          </div>
++          <Toggle on={settings.demoOnePositionPerSymbol} onChange={(v) => save({ demoOnePositionPerSymbol: v })} />
++        </div>
++
++        <label className="field-label">Provider</label>
++        <select className="input" value={settings.demoProvider}
++          onChange={(e) => save({ demoProvider: e.target.value as AppSettings["demoProvider"] })}>
++          <option value="auto">auto (Deriv en priorité)</option>
++          <option value="deriv">deriv</option>
++          <option value="binance">binance</option>
++        </select>
++
++        <label className="field-label">Montant par trade</label>
++        <input type="number" className="input" value={settings.demoNotionalUsdt}
++          onChange={(e) => setSettings({ ...settings, demoNotionalUsdt: Number(e.target.value) })}
++          onBlur={() => save({ demoNotionalUsdt: settings.demoNotionalUsdt })} />
++
++        <label className="field-label">Levier / multiplicateur</label>
++        <input type="number" className="input" value={settings.demoLeverage}
++          onChange={(e) => setSettings({ ...settings, demoLeverage: Number(e.target.value) })}
++          onBlur={() => save({ demoLeverage: settings.demoLeverage })} />
++        <p className="field-help">Pour Deriv Multipliers, ajusté automatiquement à la valeur acceptée la plus proche.</p>
++      </section>
++    </>
++  );
++}
+diff --git a/src/app/admin/subscribers/page.tsx b/src/app/admin/subscribers/page.tsx
+new file mode 100644
+index 0000000..192b808
+--- /dev/null
++++ b/src/app/admin/subscribers/page.tsx
+@@ -0,0 +1,155 @@
++"use client";
++
++import { useEffect, useState } from "react";
++
++type Subscriber = {
++  id: string;
++  chatId: string;
++  label: string;
++  type: "channel" | "dm";
++  feed: "crypto" | "smc" | "both";
++  active: boolean;
++  expiresAt: string | null;
++  createdAt: string;
++};
++
++export default function SubscribersPage() {
++  const [subs, setSubs] = useState<Subscriber[]>([]);
++  const [chatId, setChatId] = useState("");
++  const [label, setLabel] = useState("");
++  const [type, setType] = useState<"channel" | "dm">("dm");
++  const [feed, setFeed] = useState<"crypto" | "smc" | "both">("both");
++  const [expiresAt, setExpiresAt] = useState("");
++  const [error, setError] = useState<string | null>(null);
++
++  async function load() {
++    const res = await fetch("/api/admin/subscribers").then((r) => r.json());
++    if (res.ok) setSubs(res.subscribers);
++  }
++
++  useEffect(() => {
++    load();
++  }, []);
++
++  async function add() {
++    setError(null);
++    if (!chatId.trim()) {
++      setError("chat_id requis");
++      return;
++    }
++    const res = await fetch("/api/admin/subscribers", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ chatId, label, type, feed, expiresAt: expiresAt || null }),
++    });
++    const data = await res.json();
++    if (data.ok) {
++      setSubs(data.subscribers);
++      setChatId("");
++      setLabel("");
++      setExpiresAt("");
++    } else {
++      setError(data.error || "Échec");
++    }
++  }
++
++  async function toggleActive(s: Subscriber) {
++    const res = await fetch("/api/admin/subscribers", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ action: "update", id: s.id, patch: { active: !s.active } }),
++    });
++    const data = await res.json();
++    if (data.ok) setSubs(data.subscribers);
++  }
++
++  async function del(id: string) {
++    if (!confirm("Supprimer cet abonné ?")) return;
++    const res = await fetch("/api/admin/subscribers", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ action: "delete", id }),
++    });
++    const data = await res.json();
++    if (data.ok) setSubs(data.subscribers);
++  }
++
++  function isExpired(s: Subscriber) {
++    return s.expiresAt ? new Date(s.expiresAt) < new Date() : false;
++  }
++
++  return (
++    <>
++      <div className="admin-topbar">
++        <h1 style={{ fontFamily: "var(--display)", fontSize: 22 }}>Abonnés</h1>
++      </div>
++
++      <div className="banner banner-info">
++        Envoyés EN PLUS du canal principal — celui-ci n&apos;est pas affecté. Pour un chat
++        privé (DM), l&apos;abonné doit d&apos;abord envoyer <code>/monid</code> au bot pour
++        récupérer son chat_id et te le donner (Telegram interdit à un bot d&apos;écrire en
++        premier à quelqu&apos;un).
++      </div>
++
++      <section className="card">
++        <h2 className="card-title">Ajouter un abonné</h2>
++
++        <label className="field-label" style={{ marginTop: 0 }}>chat_id</label>
++        <input className="input" value={chatId} onChange={(e) => setChatId(e.target.value)} placeholder="123456789 ou -1001234567890" />
++
++        <label className="field-label">Nom / repère</label>
++        <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="ex: Jean D. (abo mensuel)" />
++
++        <div className="row" style={{ marginTop: 4 }}>
++          <div style={{ flex: 1 }}>
++            <label className="field-label">Type</label>
++            <select className="input" value={type} onChange={(e) => setType(e.target.value as "channel" | "dm")}>
++              <option value="dm">Chat privé (DM)</option>
++              <option value="channel">Canal</option>
++            </select>
++          </div>
++          <div style={{ flex: 1 }}>
++            <label className="field-label">Flux</label>
++            <select className="input" value={feed} onChange={(e) => setFeed(e.target.value as typeof feed)}>
++              <option value="both">Crypto + SMC</option>
++              <option value="crypto">Crypto seul</option>
++              <option value="smc">SMC seul</option>
++            </select>
++          </div>
++        </div>
++
++        <label className="field-label">Expire le (optionnel)</label>
++        <input type="date" className="input" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
++
++        <button className="btn btn-primary" style={{ marginTop: 14 }} onClick={add}>Ajouter</button>
++        {error && <p className="toast toast-err" style={{ marginTop: 10 }}>{error}</p>}
++      </section>
++
++      <section className="card">
++        <h2 className="card-title">Liste ({subs.length})</h2>
++        {subs.length === 0 && <p className="card-sub">Aucun abonné.</p>}
++        {subs.map((s) => {
++          const expired = isExpired(s);
++          return (
++            <div key={s.id} style={{ borderTop: "1px solid var(--line)", padding: "10px 0" }}>
++              <div className="row">
++                <div>
++                  <div style={{ fontWeight: 700, fontSize: 13.5 }}>
++                    {s.label} <span className="pill" style={{ marginLeft: 6 }}>{s.type}</span>{" "}
++                    <span className="pill" style={{ marginLeft: 4 }}>{s.feed}</span>
++                    {expired && <span className="pill pill-real" style={{ marginLeft: 4 }}>expiré</span>}
++                  </div>
++                  <div className="field-help">chat_id: {s.chatId}{s.expiresAt ? ` · expire ${s.expiresAt}` : ""}</div>
++                </div>
++                <div style={{ display: "flex", gap: 8 }}>
++                  <div className={`switch ${s.active && !expired ? "on" : ""}`} role="switch" onClick={() => toggleActive(s)} />
++                  <button className="btn btn-ghost" onClick={() => del(s.id)}>Suppr.</button>
++                </div>
++              </div>
++            </div>
++          );
++        })}
++      </section>
++    </>
++  );
++}
+diff --git a/src/app/admin/templates/page.tsx b/src/app/admin/templates/page.tsx
+new file mode 100644
+index 0000000..076668a
+--- /dev/null
++++ b/src/app/admin/templates/page.tsx
+@@ -0,0 +1,82 @@
++"use client";
++
++import { useEffect, useState } from "react";
++
++type Templates = {
++  cryptoSignalTemplate: string;
++  xauSignalTemplate: string;
++  v100SignalTemplate: string;
++  [key: string]: unknown;
++};
++
++const TEMPLATE_TOKENS: Record<string, string[]> = {
++  cryptoSignalTemplate: [
++    "pair", "timeframe", "direction", "directionEmoji", "price", "ema20", "ema50",
++    "rsi", "changePct", "entryLow", "entryHigh", "stopLoss", "tp1", "tp2",
++    "tradeLines", "setup", "confidenceStars", "rationale", "signalIdLine",
++  ],
++  xauSignalTemplate: ["direction", "directionEmoji", "timeframe", "setup", "entryLow", "entryHigh", "stopLoss", "tp1", "tp2", "tp3", "rr", "time"],
++  v100SignalTemplate: ["direction", "directionEmoji", "timeframe", "setup", "oteLow", "oteHigh", "entryLow", "entryHigh", "stopLoss", "slNote", "tp1", "tp2", "tp3", "rr", "time", "confluence"],
++};
++
++export default function TemplatesPage() {
++  const [settings, setSettings] = useState<Templates | null>(null);
++  const [savedAt, setSavedAt] = useState<number | null>(null);
++
++  useEffect(() => {
++    fetch("/api/admin/settings").then((r) => r.json()).then((d) => d.ok && setSettings(d.settings));
++  }, []);
++
++  async function save(patch: Partial<Templates>) {
++    const res = await fetch("/api/admin/settings", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify(patch),
++    });
++    const data = await res.json();
++    if (data.ok) {
++      setSettings(data.settings);
++      setSavedAt(Date.now());
++      setTimeout(() => setSavedAt(null), 2000);
++    }
++  }
++
++  if (!settings) return <p>Chargement...</p>;
++
++  return (
++    <>
++      <div className="admin-topbar">
++        <h1 style={{ fontFamily: "var(--display)", fontSize: 22 }}>Templates Telegram</h1>
++      </div>
++      {savedAt && <div className="toast toast-ok">Enregistré ✓</div>}
++
++      <section className="card">
++        <p className="card-sub">
++          Tokens <code>{"{comme_ça}"}</code> remplacés à l&apos;envoi. Vide = format par défaut.
++        </p>
++
++        {([
++          ["cryptoSignalTemplate", "Signal bot crypto (BTC/ETH/SOL...)"],
++          ["xauSignalTemplate", "Signal XAUUSD (SMC)"],
++          ["v100SignalTemplate", "Signal V100 (SMC)"],
++        ] as const).map(([key, title]) => (
++          <div key={key} style={{ marginTop: 20 }}>
++            <div className="row">
++              <label className="field-label" style={{ margin: 0 }}>{title}</label>
++              <button className="reset-link" onClick={() => save({ [key]: "" } as Partial<Templates>)}>
++                Réinitialiser au défaut
++              </button>
++            </div>
++            <textarea
++              className="input"
++              value={settings[key] as string}
++              onChange={(e) => setSettings({ ...settings, [key]: e.target.value })}
++              onBlur={() => save({ [key]: settings[key] } as Partial<Templates>)}
++            />
++            <p className="field-help">Tokens : {TEMPLATE_TOKENS[key].map((t) => `{${t}}`).join(", ")}</p>
++          </div>
++        ))}
++      </section>
++    </>
++  );
++}
+diff --git a/src/app/api/admin/backtest/route.ts b/src/app/api/admin/backtest/route.ts
+index 94df718..377d42b 100644
+--- a/src/app/api/admin/backtest/route.ts
++++ b/src/app/api/admin/backtest/route.ts
+@@ -1,21 +1,35 @@
+ import { NextRequest, NextResponse } from "next/server";
+-import { availableBacktestPairs, runCryptoBacktest } from "@/lib/backtest";
++import {
++  availableBacktestPairs,
++  runCryptoBacktest,
++  runCryptoBacktestDeriv,
++  fetchAndCacheDerivHistory,
++  derivCacheStatus,
++} from "@/lib/backtest";
+ 
+ export const runtime = "nodejs";
+ export const maxDuration = 60;
+ 
+ export async function GET(req: NextRequest) {
+   try {
++    const source = req.nextUrl.searchParams.get("source") || "forex";
+     const pair = req.nextUrl.searchParams.get("pair") || "EURUSD";
+     const timeframe = req.nextUrl.searchParams.get("timeframe") || "1h";
+-    const result = runCryptoBacktest(pair, timeframe);
++
++    if (source === "deriv-status") {
++      const status = await derivCacheStatus(pair, timeframe);
++      return NextResponse.json({ ok: true, ...status });
++    }
++
++    const result =
++      source === "deriv"
++        ? await runCryptoBacktestDeriv(pair, timeframe)
++        : runCryptoBacktest(pair, timeframe);
++
+     return NextResponse.json({
+       ok: true,
+-      pairs: availableBacktestPairs(),
+-      result: {
+-        ...result,
+-        trades: result.trades.slice(-100), // évite une réponse trop lourde
+-      },
++      pairs: source === "deriv" ? ["BTCUSDT", "ETHUSDT", "SOLUSDT"] : availableBacktestPairs(),
++      result: { ...result, trades: result.trades.slice(-100) },
+     });
+   } catch (err) {
+     return NextResponse.json(
+@@ -24,3 +38,16 @@ export async function GET(req: NextRequest) {
+     );
+   }
+ }
++
++export async function POST(req: NextRequest) {
++  try {
++    const body = (await req.json()) as { pair: string; timeframe: string; days?: number };
++    const res = await fetchAndCacheDerivHistory(body.pair, body.timeframe, body.days ?? 180);
++    return NextResponse.json({ ok: true, ...res });
++  } catch (err) {
++    return NextResponse.json(
++      { ok: false, error: err instanceof Error ? err.message : "erreur" },
++      { status: 500 }
++    );
++  }
++}
+diff --git a/src/app/api/admin/rules/route.ts b/src/app/api/admin/rules/route.ts
+new file mode 100644
+index 0000000..f9b8179
+--- /dev/null
++++ b/src/app/api/admin/rules/route.ts
+@@ -0,0 +1,56 @@
++import { NextRequest, NextResponse } from "next/server";
++import { getRules, setRules, getMeta, setMeta } from "@/lib/db";
++import { runLearner, currentLossStreak } from "@/lib/learner";
++
++export const runtime = "nodejs";
++
++const DEFAULTS: Record<string, number> = {
++  learning_enabled: 1,
++  min_confidence: 3,
++  max_trades_per_day: 8,
++  pause_after_loss_streak: 3,
++  pause_hours: 6,
++  risk_pct_default: 1,
++  risk_pct_after_drawdown: 0.5,
++};
++
++export async function GET() {
++  try {
++    const rules = await getRules();
++    const merged = { ...DEFAULTS, ...rules };
++    const pausedUntil = await getMeta("paused_until");
++    const lossStreak = await currentLossStreak();
++    return NextResponse.json({ ok: true, rules: merged, pausedUntil, lossStreak });
++  } catch (err) {
++    return NextResponse.json(
++      { ok: false, error: err instanceof Error ? err.message : "erreur" },
++      { status: 500 }
++    );
++  }
++}
++
++export async function POST(req: NextRequest) {
++  try {
++    const body = (await req.json()) as { patch?: Record<string, number>; action?: string };
++
++    if (body.action === "run") {
++      const report = await runLearner(30);
++      const rules = await getRules();
++      return NextResponse.json({ ok: true, report, rules: { ...DEFAULTS, ...rules } });
++    }
++    if (body.action === "unpause") {
++      await setMeta("paused_until", "");
++      return NextResponse.json({ ok: true });
++    }
++    if (body.patch) {
++      await setRules(body.patch);
++    }
++    const rules = await getRules();
++    return NextResponse.json({ ok: true, rules: { ...DEFAULTS, ...rules } });
++  } catch (err) {
++    return NextResponse.json(
++      { ok: false, error: err instanceof Error ? err.message : "erreur" },
++      { status: 500 }
++    );
++  }
++}
+diff --git a/src/app/api/admin/subscribers/route.ts b/src/app/api/admin/subscribers/route.ts
+new file mode 100644
+index 0000000..b27dc45
+--- /dev/null
++++ b/src/app/api/admin/subscribers/route.ts
+@@ -0,0 +1,36 @@
++import { NextRequest, NextResponse } from "next/server";
++import {
++  listSubscribers,
++  addSubscriber,
++  updateSubscriber,
++  removeSubscriber,
++} from "@/lib/subscribers";
++
++export const runtime = "nodejs";
++
++export async function GET() {
++  const subs = await listSubscribers();
++  return NextResponse.json({ ok: true, subscribers: subs });
++}
++
++export async function POST(req: NextRequest) {
++  try {
++    const body = await req.json();
++    if (body.action === "delete") {
++      const subs = await removeSubscriber(body.id);
++      return NextResponse.json({ ok: true, subscribers: subs });
++    }
++    if (body.action === "update") {
++      const subs = await updateSubscriber(body.id, body.patch);
++      return NextResponse.json({ ok: true, subscribers: subs });
++    }
++    await addSubscriber(body);
++    const subs = await listSubscribers();
++    return NextResponse.json({ ok: true, subscribers: subs });
++  } catch (err) {
++    return NextResponse.json(
++      { ok: false, error: err instanceof Error ? err.message : "erreur" },
++      { status: 500 }
++    );
++  }
++}
+diff --git a/src/app/api/cron/analyze-smc/route.ts b/src/app/api/cron/analyze-smc/route.ts
+index f8dc3e9..3740445 100644
+--- a/src/app/api/cron/analyze-smc/route.ts
++++ b/src/app/api/cron/analyze-smc/route.ts
+@@ -3,6 +3,7 @@ import { getEnv } from "@/lib/env";
+ import { runSmcScan } from "@/lib/smc/engine";
+ import { formatSmcEmpty, formatSmcSignal } from "@/lib/smc/format";
+ import { publishSmcSignal } from "@/lib/telegram";
++import { broadcastToSubscribers } from "@/lib/subscribers";
+ 
+ export const runtime = "nodejs";
+ export const maxDuration = 60;
+@@ -38,6 +39,7 @@ async function run(force = false) {
+     try {
+       const text = await formatSmcSignal(signal);
+       const pub = await publishSmcSignal(text);
++      broadcastToSubscribers("smc", text).catch(() => {});
+       if (pub.errors.length) {
+         publishErrors.push(...pub.errors.map((e) => `${signal.pair}: ${e}`));
+       }
+diff --git a/src/app/api/cron/analyze/route.ts b/src/app/api/cron/analyze/route.ts
+index 9a15701..4d6ca7f 100644
+--- a/src/app/api/cron/analyze/route.ts
++++ b/src/app/api/cron/analyze/route.ts
+@@ -3,6 +3,7 @@ import { getEnv } from "@/lib/env";
+ import { getSettings } from "@/lib/settings";
+ import { runAllAnalyses } from "@/lib/analysis";
+ import { formatAnalysis } from "@/lib/format";
++import { broadcastToSubscribers } from "@/lib/subscribers";
+ import { publishAnalysis } from "@/lib/telegram";
+ import { setMeta, updateSignal } from "@/lib/db";
+ import { autoResolveOpenSignals } from "@/lib/autoResolve";
+@@ -82,6 +83,7 @@ async function run(force = false) {
+       }
+ 
+       const pub = await publishAnalysis(text, { dm: true });
++      broadcastToSubscribers("crypto", text).catch(() => {});
+       if (pub.errors.length) errors.push(...pub.errors.map((e) => `${a.pair}: ${e}`));
+       if (pub.delivered && a.signalId) {
+         if (pub.channelMessageId) {
+diff --git a/src/app/api/cron/smc-selector/route.ts b/src/app/api/cron/smc-selector/route.ts
+index ce295a1..0d7532d 100644
+--- a/src/app/api/cron/smc-selector/route.ts
++++ b/src/app/api/cron/smc-selector/route.ts
+@@ -8,6 +8,7 @@ import {
+ } from "@/lib/smc-selector/demoExecutor";
+ import { formatSmcSignal } from "@/lib/smc/format";
+ import { publishSmcSignal } from "@/lib/telegram";
++import { broadcastToSubscribers } from "@/lib/subscribers";
+ 
+ export const runtime = "nodejs";
+ export const maxDuration = 60;
+@@ -45,6 +46,7 @@ async function run() {
+     try {
+       const text = await formatSmcSignal(setup.signal);
+       const pub = await publishSmcSignal(text);
++      broadcastToSubscribers("smc", text).catch(() => {});
+       if (pub.errors.length) {
+         publishErrors.push(...pub.errors.map((e) => `${setup.pair}: ${e}`));
+       }
+diff --git a/src/lib/analysis.ts b/src/lib/analysis.ts
+index 84d8bc8..873cbf2 100644
+--- a/src/lib/analysis.ts
++++ b/src/lib/analysis.ts
+@@ -1,4 +1,6 @@
+ import { fetchKlines, toPairLabel } from "./binance";
++import { fetchDerivCandles } from "./feeds/deriv";
++import { getSettings } from "./settings";
+ import { atr, ema, rsi, type Candle } from "./indicators";
+ import {
+   countSignalsToday,
+@@ -153,7 +155,11 @@ export async function runAnalysisForSymbol(
+   cooldownMinutes = 4
+ ): Promise<AnalysisResult> {
+   const rules = await getRules();
+-  const candles = await fetchKlines(symbol, timeframe, 120);
++  const settings = await getSettings();
++  const candles =
++    settings.cryptoPriceSource === "deriv"
++      ? await fetchDerivCandles(symbol, timeframe, 120)
++      : await fetchKlines(symbol, timeframe, 120);
+   const analysis = analyzeCandles(symbol, timeframe, candles);
+ 
+   const pausedUntil = await getMeta("paused_until");
+diff --git a/src/lib/backtest.ts b/src/lib/backtest.ts
+index 847afd6..f93053c 100644
+--- a/src/lib/backtest.ts
++++ b/src/lib/backtest.ts
+@@ -1,5 +1,7 @@
+ import type { Candle } from "./indicators";
+ import { analyzeCandles } from "./analysis";
++import { fetchDerivCandlesRange, DERIV_SYMBOLS } from "./feeds/deriv";
++import { getMeta, setMeta } from "./db";
+ import fs from "fs";
+ import path from "path";
+ 
+@@ -41,6 +43,63 @@ export function availableBacktestPairs(): string[] {
+   return Object.keys(loadHistoricalData());
+ }
+ 
++/* ------------------------------------------------------------------ */
++/* Deriv — vraies paires du bot (BTC/ETH/SOL), historique mis en cache */
++/* dans Supabase (pas de disque : filesystem Vercel en lecture seule   */
++/* hors build). Connexion publique séparée de la session de trading — */
++/* aucune interférence possible avec un trade en cours.                */
++/* ------------------------------------------------------------------ */
++
++function derivCacheKey(pair: string, timeframe: string): string {
++  return `backtest_deriv_${pair}_${timeframe}`;
++}
++
++export async function fetchAndCacheDerivHistory(
++  pair: string,
++  timeframe: string,
++  days: number
++): Promise<{ bars: number }> {
++  if (!(pair in DERIV_SYMBOLS)) {
++    throw new Error(`Paire non supportée sur Deriv: ${pair}`);
++  }
++  const toEpoch = Math.floor(Date.now() / 1000);
++  const fromEpoch = toEpoch - days * 86400;
++  const candles = await fetchDerivCandlesRange(pair, timeframe, fromEpoch, toEpoch);
++  if (!candles.length) throw new Error("Aucune donnée renvoyée par Deriv");
++
++  const raw = candles.map((c) => [c.openTime / 1000, c.open, c.high, c.low, c.close]);
++  await setMeta(derivCacheKey(pair, timeframe), JSON.stringify(raw));
++  return { bars: candles.length };
++}
++
++export async function derivCacheStatus(
++  pair: string,
++  timeframe: string
++): Promise<{ cached: boolean; bars: number }> {
++  const raw = await getMeta(derivCacheKey(pair, timeframe));
++  if (!raw) return { cached: false, bars: 0 };
++  try {
++    const arr = JSON.parse(raw) as unknown[];
++    return { cached: true, bars: arr.length };
++  } catch {
++    return { cached: false, bars: 0 };
++  }
++}
++
++export async function runCryptoBacktestDeriv(
++  pair: string,
++  timeframe: string
++): Promise<BacktestResult> {
++  const raw = await getMeta(derivCacheKey(pair, timeframe));
++  if (!raw) {
++    throw new Error(
++      `Pas d'historique en cache pour ${pair} ${timeframe} — clique "Télécharger l'historique" d'abord`
++    );
++  }
++  const parsed = JSON.parse(raw) as [number, number, number, number, number][];
++  return runBacktestOnRawCandles(pair, timeframe, parsed);
++}
++
+ function toCandles(raw: [number, number, number, number, number][]): Candle[] {
+   return raw.map(([openTime, open, high, low, close]) => ({
+     openTime: openTime * 1000,
+@@ -67,6 +126,17 @@ export function runCryptoBacktest(
+   if (!raw || raw.length < 150) {
+     throw new Error(`Pas assez de données pour ${pair} ${timeframe}`);
+   }
++  return runBacktestOnRawCandles(pair, timeframe, raw);
++}
++
++function runBacktestOnRawCandles(
++  pair: string,
++  timeframe: string,
++  raw: [number, number, number, number, number][]
++): BacktestResult {
++  if (raw.length < 150) {
++    throw new Error(`Pas assez de données pour ${pair} ${timeframe}`);
++  }
+   const candles = toCandles(raw);
+   const WINDOW = 120;
+   const trades: BacktestTrade[] = [];
+diff --git a/src/lib/commands.ts b/src/lib/commands.ts
+index 757fcef..5d03324 100644
+--- a/src/lib/commands.ts
++++ b/src/lib/commands.ts
+@@ -108,6 +108,18 @@ export async function handleUpdate(update: {
+ 
+   try {
+     switch (cmd) {
++      case "/monid":
++      case "/myid":
++        await reply(
++          chatId,
++          [
++            `Ton chat_id : \`${chatId}\``,
++            "",
++            "Donne cet ID à l'administrateur pour être ajouté à la liste des abonnés.",
++          ].join("\n")
++        );
++        return;
++
+       case "/start":
+       case "/help":
+         await reply(
+diff --git a/src/lib/feeds/deriv.ts b/src/lib/feeds/deriv.ts
+index c1822f3..8822964 100644
+--- a/src/lib/feeds/deriv.ts
++++ b/src/lib/feeds/deriv.ts
+@@ -2,10 +2,13 @@ import type { Candle } from "../indicators";
+ 
+ const DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089";
+ 
+-/** Deriv symbols used by the SMC engine */
++/** Deriv symbols used by the SMC engine + bot crypto (exécution réelle) */
+ export const DERIV_SYMBOLS = {
+   XAUUSD: "frxXAUUSD",
+   V100: "R_100",
++  BTCUSDT: "cryBTCUSD",
++  ETHUSDT: "cryETHUSD",
++  SOLUSDT: "crySOLUSD",
+ } as const;
+ 
+ export type DerivPair = keyof typeof DERIV_SYMBOLS;
+@@ -20,6 +23,7 @@ export const GRANULARITY: Record<string, number> = {
+   "15m": 900,
+   "30m": 1800,
+   "1h": 3600,
++  "2h": 7200,
+   "4h": 14400,
+   "1d": 86400,
+ };
+@@ -128,3 +132,91 @@ export async function fetchDerivCandles(
+     });
+   });
+ }
++
++/**
++ * Historique profond, paginé (Deriv limite ~5000 bougies/requête via
++ * `ticks_history` avec start/end). Utilisé UNIQUEMENT par le backtest —
++ * connexion publique séparée de la session de trading, aucun risque
++ * d'interférer avec un trade en cours.
++ */
++export async function fetchDerivCandlesRange(
++  pair: DerivPair | string,
++  timeframe: string,
++  fromEpochSec: number,
++  toEpochSec: number
++): Promise<Candle[]> {
++  const symbol = DERIV_SYMBOLS[pair as DerivPair] || String(pair).trim();
++  const granularity = GRANULARITY[timeframe];
++  if (!granularity) throw new Error(`Deriv TF non supporté: ${timeframe}`);
++
++  const CHUNK = 5000 * granularity;
++  const all: Candle[] = [];
++  let cursor = fromEpochSec;
++
++  while (cursor < toEpochSec) {
++    const chunkEnd = Math.min(cursor + CHUNK, toEpochSec);
++    const chunk = await fetchOneRange(symbol, granularity, cursor, chunkEnd);
++    all.push(...chunk);
++    if (!chunk.length) break;
++    cursor = chunkEnd;
++  }
++  return all;
++}
++
++function fetchOneRange(
++  symbol: string,
++  granularity: number,
++  start: number,
++  end: number,
++  timeoutMs = 15_000
++): Promise<Candle[]> {
++  return new Promise((resolve, reject) => {
++    const ws = new WebSocket(DERIV_WS);
++    let settled = false;
++    const finish = (err?: Error, candles?: Candle[]) => {
++      if (settled) return;
++      settled = true;
++      clearTimeout(timer);
++      try {
++        ws.close();
++      } catch {
++        /* ignore */
++      }
++      if (err) reject(err);
++      else resolve(candles || []);
++    };
++    const timer = setTimeout(() => finish(new Error(`Deriv range timeout ${symbol}`)), timeoutMs);
++
++    ws.addEventListener("open", () => {
++      ws.send(
++        JSON.stringify({
++          ticks_history: symbol,
++          adjust_start_time: 1,
++          start,
++          end,
++          granularity,
++          style: "candles",
++        })
++      );
++    });
++    ws.addEventListener("message", (ev) => {
++      try {
++        const data = JSON.parse(String(ev.data)) as {
++          msg_type?: string;
++          candles?: DerivCandle[];
++          error?: { message?: string; code?: string };
++        };
++        if (data.error) {
++          finish(new Error(`Deriv ${symbol}: ${data.error.message || data.error.code}`));
++          return;
++        }
++        if (data.msg_type === "candles") {
++          finish(undefined, toCandles(data.candles || []));
++        }
++      } catch (err) {
++        finish(err instanceof Error ? err : new Error("Deriv parse error"));
++      }
++    });
++    ws.addEventListener("error", () => finish(new Error(`Deriv WS error ${symbol}`)));
++  });
++}
+diff --git a/src/lib/settings.ts b/src/lib/settings.ts
+index 7747cc9..c2f3d12 100644
+--- a/src/lib/settings.ts
++++ b/src/lib/settings.ts
+@@ -17,6 +17,9 @@ export type AppSettings = {
+   analyzeTimeframe: string;
+   analyzeCooldownMinutes: number;
+   autoExpireHours: number;
++  /** Source des bougies pour le bot crypto — Deriv recommandé (même
++   * source que l'exécution, évite l'écart Binance/Deriv). */
++  cryptoPriceSource: "binance" | "deriv";
+ 
+   // Bot SMC classique (XAUUSD/V100)
+   smcCooldownMinutes: number;
+@@ -52,6 +55,7 @@ function defaultsFromEnv(): AppSettings {
+     analyzeTimeframe: env.timeframe,
+     analyzeCooldownMinutes: env.cooldownMinutes,
+     autoExpireHours: env.autoExpireHours,
++    cryptoPriceSource: "deriv",
+     smcCooldownMinutes: env.smcCooldownMinutes,
+     smcPostEmpty: env.smcPostEmpty,
+     smcSelectorThreshold: Number(process.env.SMC_SELECTOR_THRESHOLD || 85),
+@@ -88,6 +92,9 @@ function sanitize(partial: Partial<AppSettings>, base: AppSettings): AppSettings
+   if (!["auto", "deriv", "binance"].includes(next.demoProvider)) {
+     next.demoProvider = base.demoProvider;
+   }
++  if (!["binance", "deriv"].includes(next.cryptoPriceSource)) {
++    next.cryptoPriceSource = base.cryptoPriceSource;
++  }
+   if (!["demo", "real"].includes(next.derivAccountType)) {
+     next.derivAccountType = base.derivAccountType;
+   }
+diff --git a/src/lib/subscribers.ts b/src/lib/subscribers.ts
+new file mode 100644
+index 0000000..9c2ee34
+--- /dev/null
++++ b/src/lib/subscribers.ts
+@@ -0,0 +1,104 @@
++import { getMeta, setMeta } from "./db";
++import { sendMessage } from "./telegram";
++
++export type Subscriber = {
++  id: string;
++  chatId: string;
++  label: string;
++  type: "channel" | "dm";
++  feed: "crypto" | "smc" | "both";
++  active: boolean;
++  expiresAt: string | null;
++  createdAt: string;
++  note?: string;
++};
++
++const KEY = "subscribers_v1";
++
++export async function listSubscribers(): Promise<Subscriber[]> {
++  const raw = await getMeta(KEY);
++  if (!raw) return [];
++  try {
++    return JSON.parse(raw) as Subscriber[];
++  } catch {
++    return [];
++  }
++}
++
++async function saveSubscribers(list: Subscriber[]): Promise<void> {
++  await setMeta(KEY, JSON.stringify(list));
++}
++
++export async function addSubscriber(input: {
++  chatId: string;
++  label: string;
++  type: "channel" | "dm";
++  feed: "crypto" | "smc" | "both";
++  expiresAt?: string | null;
++  note?: string;
++}): Promise<Subscriber> {
++  const list = await listSubscribers();
++  const sub: Subscriber = {
++    id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
++    chatId: input.chatId.trim(),
++    label: input.label.trim() || input.chatId.trim(),
++    type: input.type,
++    feed: input.feed,
++    active: true,
++    expiresAt: input.expiresAt || null,
++    createdAt: new Date().toISOString(),
++    note: input.note,
++  };
++  list.push(sub);
++  await saveSubscribers(list);
++  return sub;
++}
++
++export async function updateSubscriber(
++  id: string,
++  patch: Partial<Omit<Subscriber, "id" | "createdAt">>
++): Promise<Subscriber[]> {
++  const list = await listSubscribers();
++  const next = list.map((s) => (s.id === id ? { ...s, ...patch } : s));
++  await saveSubscribers(next);
++  return next;
++}
++
++export async function removeSubscriber(id: string): Promise<Subscriber[]> {
++  const list = await listSubscribers();
++  const next = list.filter((s) => s.id !== id);
++  await saveSubscribers(next);
++  return next;
++}
++
++function isActiveNow(s: Subscriber): boolean {
++  if (!s.active) return false;
++  if (s.expiresAt && new Date(s.expiresAt) < new Date()) return false;
++  return true;
++}
++
++export async function broadcastToSubscribers(
++  feed: "crypto" | "smc",
++  text: string
++): Promise<{ sent: number; failed: string[] }> {
++  const list = await listSubscribers();
++  const targets = list.filter(
++    (s) => isActiveNow(s) && (s.feed === feed || s.feed === "both")
++  );
++
++  let sent = 0;
++  const failed: string[] = [];
++
++  await Promise.all(
++    targets.map(async (s) => {
++      try {
++        await sendMessage(s.chatId, text);
++        sent++;
++      } catch {
++        failed.push(s.label);
++      }
++    })
++  );
++
++  return { sent, failed };
++}

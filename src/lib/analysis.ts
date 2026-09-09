@@ -1,4 +1,6 @@
 import { fetchKlines, toPairLabel } from "./binance";
+import { fetchDerivCandles } from "./feeds/deriv";
+import { getSettings } from "./settings";
 import { atr, ema, rsi, type Candle } from "./indicators";
 import {
   countSignalsToday,
@@ -153,7 +155,11 @@ export async function runAnalysisForSymbol(
   cooldownMinutes = 4
 ): Promise<AnalysisResult> {
   const rules = await getRules();
-  const candles = await fetchKlines(symbol, timeframe, 120);
+  const settings = await getSettings();
+  const candles =
+    settings.cryptoPriceSource === "deriv"
+      ? await fetchDerivCandles(symbol, timeframe, 120)
+      : await fetchKlines(symbol, timeframe, 120);
   const analysis = analyzeCandles(symbol, timeframe, candles);
 
   const pausedUntil = await getMeta("paused_until");

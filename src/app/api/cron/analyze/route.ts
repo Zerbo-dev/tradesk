@@ -3,6 +3,7 @@ import { getEnv } from "@/lib/env";
 import { getSettings } from "@/lib/settings";
 import { runAllAnalyses } from "@/lib/analysis";
 import { formatAnalysis } from "@/lib/format";
+import { broadcastToSubscribers } from "@/lib/subscribers";
 import { publishAnalysis } from "@/lib/telegram";
 import { setMeta, updateSignal } from "@/lib/db";
 import { autoResolveOpenSignals } from "@/lib/autoResolve";
@@ -82,6 +83,7 @@ async function run(force = false) {
       }
 
       const pub = await publishAnalysis(text, { dm: true });
+      broadcastToSubscribers("crypto", text).catch(() => {});
       if (pub.errors.length) errors.push(...pub.errors.map((e) => `${a.pair}: ${e}`));
       if (pub.delivered && a.signalId) {
         if (pub.channelMessageId) {

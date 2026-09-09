@@ -8,6 +8,7 @@ import {
 } from "@/lib/smc-selector/demoExecutor";
 import { formatSmcSignal } from "@/lib/smc/format";
 import { publishSmcSignal } from "@/lib/telegram";
+import { broadcastToSubscribers } from "@/lib/subscribers";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -45,6 +46,7 @@ async function run() {
     try {
       const text = await formatSmcSignal(setup.signal);
       const pub = await publishSmcSignal(text);
+      broadcastToSubscribers("smc", text).catch(() => {});
       if (pub.errors.length) {
         publishErrors.push(...pub.errors.map((e) => `${setup.pair}: ${e}`));
       }

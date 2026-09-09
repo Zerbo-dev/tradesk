@@ -1,5 +1,7 @@
 import type { Candle } from "./indicators";
 import { analyzeCandles } from "./analysis";
+import { fetchDerivCandlesRange, DERIV_SYMBOLS } from "./feeds/deriv";
+import { getMeta, setMeta } from "./db";
 import fs from "fs";
 import path from "path";
 
@@ -41,6 +43,63 @@ export function availableBacktestPairs(): string[] {
   return Object.keys(loadHistoricalData());
 }
 
+/* ------------------------------------------------------------------ */
+/* Deriv — vraies paires du bot (BTC/ETH/SOL), historique mis en cache */
+/* dans Supabase (pas de disque : filesystem Vercel en lecture seule   */
+/* hors build). Connexion publique séparée de la session de trading — */
+/* aucune interférence possible avec un trade en cours.                */
+/* ------------------------------------------------------------------ */
+
+function derivCacheKey(pair: string, timeframe: string): string {
+  return `backtest_deriv_${pair}_${timeframe}`;
+}
+
+export async function fetchAndCacheDerivHistory(
+  pair: string,
+  timeframe: string,
+  days: number
+): Promise<{ bars: number }> {
+  if (!(pair in DERIV_SYMBOLS)) {
+    throw new Error(`Paire non supportée sur Deriv: ${pair}`);
+  }
+  const toEpoch = Math.floor(Date.now() / 1000);
+  const fromEpoch = toEpoch - days * 86400;
+  const candles = await fetchDerivCandlesRange(pair, timeframe, fromEpoch, toEpoch);
+  if (!candles.length) throw new Error("Aucune donnée renvoyée par Deriv");
+
+  const raw = candles.map((c) => [c.openTime / 1000, c.open, c.high, c.low, c.close]);
+  await setMeta(derivCacheKey(pair, timeframe), JSON.stringify(raw));
+  return { bars: candles.length };
+}
+
+export async function derivCacheStatus(
+  pair: string,
+  timeframe: string
+): Promise<{ cached: boolean; bars: number }> {
+  const raw = await getMeta(derivCacheKey(pair, timeframe));
+  if (!raw) return { cached: false, bars: 0 };
+  try {
+    const arr = JSON.parse(raw) as unknown[];
+    return { cached: true, bars: arr.length };
+  } catch {
+    return { cached: false, bars: 0 };
+  }
+}
+
+export async function runCryptoBacktestDeriv(
+  pair: string,
+  timeframe: string
+): Promise<BacktestResult> {
+  const raw = await getMeta(derivCacheKey(pair, timeframe));
+  if (!raw) {
+    throw new Error(
+      `Pas d'historique en cache pour ${pair} ${timeframe} — clique "Télécharger l'historique" d'abord`
+    );
+  }
+  const parsed = JSON.parse(raw) as [number, number, number, number, number][];
+  return runBacktestOnRawCandles(pair, timeframe, parsed);
+}
+
 function toCandles(raw: [number, number, number, number, number][]): Candle[] {
   return raw.map(([openTime, open, high, low, close]) => ({
     openTime: openTime * 1000,
@@ -65,6 +124,17 @@ export function runCryptoBacktest(
   const data = loadHistoricalData();
   const raw = data[pair]?.[timeframe];
   if (!raw || raw.length < 150) {
+    throw new Error(`Pas assez de données pour ${pair} ${timeframe}`);
+  }
+  return runBacktestOnRawCandles(pair, timeframe, raw);
+}
+
+function runBacktestOnRawCandles(
+  pair: string,
+  timeframe: string,
+  raw: [number, number, number, number, number][]
+): BacktestResult {
+  if (raw.length < 150) {
     throw new Error(`Pas assez de données pour ${pair} ${timeframe}`);
   }
   const candles = toCandles(raw);

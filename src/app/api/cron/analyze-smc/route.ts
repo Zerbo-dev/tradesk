@@ -3,6 +3,7 @@ import { getEnv } from "@/lib/env";
 import { runSmcScan } from "@/lib/smc/engine";
 import { formatSmcEmpty, formatSmcSignal } from "@/lib/smc/format";
 import { publishSmcSignal } from "@/lib/telegram";
+import { broadcastToSubscribers } from "@/lib/subscribers";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -38,6 +39,7 @@ async function run(force = false) {
     try {
       const text = await formatSmcSignal(signal);
       const pub = await publishSmcSignal(text);
+      broadcastToSubscribers("smc", text).catch(() => {});
       if (pub.errors.length) {
         publishErrors.push(...pub.errors.map((e) => `${signal.pair}: ${e}`));
       }

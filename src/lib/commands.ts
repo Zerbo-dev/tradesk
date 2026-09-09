@@ -108,6 +108,18 @@ export async function handleUpdate(update: {
 
   try {
     switch (cmd) {
+      case "/monid":
+      case "/myid":
+        await reply(
+          chatId,
+          [
+            `Ton chat_id : \`${chatId}\``,
+            "",
+            "Donne cet ID à l'administrateur pour être ajouté à la liste des abonnés.",
+          ].join("\n")
+        );
+        return;
+
       case "/start":
       case "/help":
         await reply(

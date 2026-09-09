@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import "../admin.css";
 
 export default function AdminLoginPage() {
   const router = useRouter();
@@ -35,13 +34,12 @@ export default function AdminLoginPage() {
   }
 
   return (
-    <div className="admin-root">
-      <main className="login-shell">
-        <div className="admin-brand" style={{ marginBottom: 20 }}>
-          <span className="dot" />
-          TradeSk Admin
-        </div>
-        <div className="login-card">
+    <main className="login-shell">
+      <div className="admin-brand" style={{ marginBottom: 20 }}>
+        <span className="dot" />
+        TradeSk Admin
+      </div>
+      <div className="login-card">
           <form onSubmit={onSubmit}>
             <label className="field-label" style={{ marginTop: 0 }}>Mot de passe</label>
             <input
@@ -60,10 +58,9 @@ export default function AdminLoginPage() {
             >
               {loading ? "Connexion..." : "Se connecter"}
             </button>
-            {error && <p className="toast toast-err" style={{ marginTop: 14, width: "100%" }}>{error}</p>}
-          </form>
-        </div>
-      </main>
-    </div>
+          {error && <p className="toast toast-err" style={{ marginTop: 14, width: "100%" }}>{error}</p>}
+        </form>
+      </div>
+    </main>
   );
 }
