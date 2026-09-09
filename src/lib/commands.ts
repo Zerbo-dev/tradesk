@@ -61,10 +61,10 @@ async function runForcedAnalyze(chatId: number): Promise<void> {
         try {
           const demo = await executeDemoForAnalysis(a);
           textOut += demo.ok
-            ? `\n\n💰 DEMO ORDER\n${demo.detail}`
-            : `\n\n⚠️ DEMO: ${demo.detail}`;
+            ? `\n\n💰 TRADE ORDER\n${demo.detail}`
+            : `\n\n⚠️ TRADE: ${demo.detail}`;
         } catch (err) {
-          textOut += `\n\n⚠️ DEMO ERROR: ${
+          textOut += `\n\n⚠️ TRADE ERROR: ${
             err instanceof Error ? err.message : "error"
           }`;
         }

@@ -73,7 +73,7 @@ export async function executeDemoForSetup(
   }
 
   const direction = signal.direction === "BUY" ? "LONG" : "SHORT";
-  const takeProfit = signal.tp2 ?? signal.tp1;
+  const takeProfit = signal.tp1 ?? signal.tp2;
 
   try {
     const order = await placeDemoTrade({
