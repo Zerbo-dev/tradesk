@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
     const result =
       source === "deriv"
         ? await runCryptoBacktestDeriv(pair, timeframe)
-        : runCryptoBacktest(pair, timeframe);
+        : await runCryptoBacktest(pair, timeframe);
 
     return NextResponse.json({
       ok: true,

@@ -1,7 +1,7 @@
 import type { Candle } from "./indicators";
 import { analyzeCandles } from "./analysis";
 import { fetchDerivCandlesRange, DERIV_SYMBOLS } from "./feeds/deriv";
-import { getMeta, setMeta } from "./db";
+import { getMeta, setMeta, getRules } from "./db";
 import fs from "fs";
 import path from "path";
 
@@ -97,7 +97,7 @@ export async function runCryptoBacktestDeriv(
     );
   }
   const parsed = JSON.parse(raw) as [number, number, number, number, number][];
-  return runBacktestOnRawCandles(pair, timeframe, parsed);
+  return await runBacktestOnRawCandles(pair, timeframe, parsed);
 }
 
 function toCandles(raw: [number, number, number, number, number][]): Candle[] {
@@ -117,10 +117,10 @@ function toCandles(raw: [number, number, number, number, number][]): Candle[] {
  * une fenêtre glissante de 120 bougies (comme runAnalysisForSymbol).
  * Simule chaque signal jusqu'à SL ou TP1 (R fixe, cohérent avec le bot).
  */
-export function runCryptoBacktest(
+export async function runCryptoBacktest(
   pair: string,
   timeframe: string
-): BacktestResult {
+): Promise<BacktestResult> {
   const data = loadHistoricalData();
   const raw = data[pair]?.[timeframe];
   if (!raw || raw.length < 150) {
@@ -129,21 +129,49 @@ export function runCryptoBacktest(
   return runBacktestOnRawCandles(pair, timeframe, raw);
 }
 
-function runBacktestOnRawCandles(
+async function runBacktestOnRawCandles(
   pair: string,
   timeframe: string,
   raw: [number, number, number, number, number][]
-): BacktestResult {
+): Promise<BacktestResult> {
   if (raw.length < 150) {
     throw new Error(`Pas assez de données pour ${pair} ${timeframe}`);
   }
+
+  // Mêmes règles que le bot live (page Apprentissage / commande /learn) —
+  // si tu les changes là-bas, le backtest en tient compte automatiquement.
+  const rules = await getRules();
+  const minConf = Number(rules.min_confidence ?? 3);
+  const maxTradesPerDay = Number(rules.max_trades_per_day ?? 96);
+  const cooldownMinutes = Number(rules.analyze_cooldown_minutes ?? 4);
+  const pauseAfterLossStreak = Number(rules.pause_after_loss_streak ?? 3);
+  const pauseHours = Number(rules.pause_hours ?? 6);
+
   const candles = toCandles(raw);
   const WINDOW = 120;
   const trades: BacktestTrade[] = [];
-  let cooldownUntil = -1;
+
+  const candleMinutes = candleMinutesFor(timeframe);
+  let lastSignalTime = -Infinity;
+  let pausedUntilTime = -Infinity;
+  let lossStreak = 0;
+  const dayWindowMs = 24 * 60 * 60 * 1000;
 
   for (let i = WINDOW; i < candles.length - 1; i++) {
-    if (i < cooldownUntil) continue;
+    const now = candles[i].openTime;
+
+    // 1) Pause après une série de pertes (même logique que paused_until en live)
+    if (now < pausedUntilTime) continue;
+
+    // 2) Cooldown entre 2 signaux (en vrai temps, pas en nombre de bougies)
+    if (candleMinutes > 0 && (now - lastSignalTime) / 60000 < cooldownMinutes) continue;
+
+    // 3) Limite de trades/jour (fenêtre glissante 24h, comme countSignalsToday)
+    if (maxTradesPerDay > 0) {
+      const tradesLast24h = trades.filter((t) => now - t.time < dayWindowMs).length;
+      if (tradesLast24h >= maxTradesPerDay) continue;
+    }
+
     const window = candles.slice(i - WINDOW, i + 1);
     let a;
     try {
@@ -152,6 +180,10 @@ function runBacktestOnRawCandles(
       continue;
     }
     if (a.direction !== "LONG" && a.direction !== "SHORT") continue;
+
+    // 4) Filtre de confiance minimum (même seuil que le bot live)
+    if (a.confidence < minConf) continue;
+
     if (a.stopLoss == null || a.tp1 == null) continue;
 
     const entry = a.price;
@@ -168,8 +200,6 @@ function runBacktestOnRawCandles(
       const c = candles[j];
       const hitSL = a.direction === "LONG" ? c.low <= stopLoss : c.high >= stopLoss;
       const hitTP = a.direction === "LONG" ? c.high >= tp1 : c.low <= tp1;
-      // Prudence : si les deux sont touchés dans la même bougie, on
-      // considère le SL en premier (hypothèse conservatrice).
       if (hitSL) {
         outcome = "SL";
         exitIndex = j;
@@ -186,7 +216,7 @@ function runBacktestOnRawCandles(
 
     trades.push({
       index: i,
-      time: candles[i].openTime,
+      time: now,
       direction: a.direction,
       entry,
       stopLoss,
@@ -195,7 +225,19 @@ function runBacktestOnRawCandles(
       exitIndex,
       r,
     });
-    cooldownUntil = i + 5; // évite le sur-comptage de signaux quasi-identiques
+
+    lastSignalTime = now;
+
+    // Suivi de la série de pertes → pause simulée, comme en live
+    if (outcome === "SL") {
+      lossStreak++;
+      if (pauseAfterLossStreak > 0 && lossStreak >= pauseAfterLossStreak) {
+        pausedUntilTime = now + pauseHours * 60 * 60 * 1000;
+        lossStreak = 0;
+      }
+    } else if (outcome === "TP") {
+      lossStreak = 0;
+    }
   }
 
   const closed = trades.filter((t) => t.outcome !== "OPEN_AT_END");
@@ -222,4 +264,11 @@ function runBacktestOnRawCandles(
     sumR,
     maxDrawdownR: maxDD,
   };
+}
+
+function candleMinutesFor(timeframe: string): number {
+  const map: Record<string, number> = {
+    "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "2h": 120, "4h": 240, "1d": 1440,
+  };
+  return map[timeframe] ?? 0;
 }

@@ -101,9 +101,10 @@ export default function BacktestPage() {
       </div>
 
       <div className="banner banner-info">
-        Rejoue la vraie logique du bot crypto (EMA20/50 + RSI + pullback). Deriv = vraies
-        paires du bot (BTC/ETH/SOL), historique à télécharger une fois. Forex = dataset
-        de référence (7 majeures) déjà disponible.
+        Rejoue la vraie logique du bot crypto (EMA20/50 + RSI + pullback), en appliquant
+        les mêmes règles que le live (page Apprentissage) : confiance minimum, cooldown,
+        limite de trades/jour, pause après pertes d&apos;affilée. Deriv = vraies paires du
+        bot (BTC/ETH/SOL). Forex = dataset de référence (7 majeures).
       </div>
 
       <section className="card">
