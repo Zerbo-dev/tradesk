@@ -14,6 +14,7 @@ type Result = {
   timeframe: string;
   bars: number;
   trades: Trade[];
+  totalClosedTrades: number;
   winrate: number | null;
   avgR: number;
   sumR: number;
@@ -160,7 +161,7 @@ export default function BacktestPage() {
       {result && (
         <section className="card">
           <h2 className="card-title">{result.pair} · {result.timeframe} · {result.bars} bougies</h2>
-          <div className="stat-line"><span>Trades clos</span><b>{result.trades.filter((t) => t.outcome !== "OPEN_AT_END").length}</b></div>
+          <div className="stat-line"><span>Trades clos (total)</span><b>{result.totalClosedTrades}</b></div>
           <div className="stat-line">
             <span>Winrate</span>
             <b>{result.winrate === null ? "n/a" : `${Math.round(result.winrate * 100)}%`}</b>
@@ -180,7 +181,7 @@ export default function BacktestPage() {
           <div className="stat-line"><span>Drawdown max</span><b>{result.maxDrawdownR.toFixed(2)}R</b></div>
 
           <div className="field-label" style={{ marginTop: 18 }}>
-            Derniers trades ({Math.min(100, result.trades.length)})
+            Derniers trades affichés ({result.trades.length} sur {result.totalClosedTrades} au total)
           </div>
           <div style={{ maxHeight: 320, overflowY: "auto", marginTop: 8 }}>
             {result.trades.slice().reverse().map((t, i) => (

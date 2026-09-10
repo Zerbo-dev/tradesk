@@ -1,0 +1,79 @@
+diff --git a/src/app/admin/backtest/page.tsx b/src/app/admin/backtest/page.tsx
+index a258b60..32262b8 100644
+--- a/src/app/admin/backtest/page.tsx
++++ b/src/app/admin/backtest/page.tsx
+@@ -14,6 +14,7 @@ type Result = {
+   timeframe: string;
+   bars: number;
+   trades: Trade[];
++  totalClosedTrades: number;
+   winrate: number | null;
+   avgR: number;
+   sumR: number;
+@@ -160,7 +161,7 @@ export default function BacktestPage() {
+       {result && (
+         <section className="card">
+           <h2 className="card-title">{result.pair} · {result.timeframe} · {result.bars} bougies</h2>
+-          <div className="stat-line"><span>Trades clos</span><b>{result.trades.filter((t) => t.outcome !== "OPEN_AT_END").length}</b></div>
++          <div className="stat-line"><span>Trades clos (total)</span><b>{result.totalClosedTrades}</b></div>
+           <div className="stat-line">
+             <span>Winrate</span>
+             <b>{result.winrate === null ? "n/a" : `${Math.round(result.winrate * 100)}%`}</b>
+@@ -180,7 +181,7 @@ export default function BacktestPage() {
+           <div className="stat-line"><span>Drawdown max</span><b>{result.maxDrawdownR.toFixed(2)}R</b></div>
+ 
+           <div className="field-label" style={{ marginTop: 18 }}>
+-            Derniers trades ({Math.min(100, result.trades.length)})
++            Derniers trades affichés ({result.trades.length} sur {result.totalClosedTrades} au total)
+           </div>
+           <div style={{ maxHeight: 320, overflowY: "auto", marginTop: 8 }}>
+             {result.trades.slice().reverse().map((t, i) => (
+diff --git a/src/lib/backtest.ts b/src/lib/backtest.ts
+index 02dd7fe..1e85d52 100644
+--- a/src/lib/backtest.ts
++++ b/src/lib/backtest.ts
+@@ -22,6 +22,7 @@ export type BacktestResult = {
+   timeframe: string;
+   bars: number;
+   trades: BacktestTrade[];
++  totalClosedTrades: number;
+   winrate: number | null;
+   avgR: number;
+   sumR: number;
+@@ -153,6 +154,7 @@ async function runBacktestOnRawCandles(
+ 
+   const candleMinutes = candleMinutesFor(timeframe);
+   let lastSignalTime = -Infinity;
++  let openPositionUntilTime = -Infinity; // 1 position max par paire, comme en live
+   let pausedUntilTime = -Infinity;
+   let lossStreak = 0;
+   const dayWindowMs = 24 * 60 * 60 * 1000;
+@@ -166,6 +168,10 @@ async function runBacktestOnRawCandles(
+     // 2) Cooldown entre 2 signaux (en vrai temps, pas en nombre de bougies)
+     if (candleMinutes > 0 && (now - lastSignalTime) / 60000 < cooldownMinutes) continue;
+ 
++    // 2bis) 1 position max par paire — bloque tant que le trade précédent
++    // n'a pas touché SL/TP, exactement comme le guard demoExecutor en live.
++    if (now < openPositionUntilTime) continue;
++
+     // 3) Limite de trades/jour (fenêtre glissante 24h, comme countSignalsToday)
+     if (maxTradesPerDay > 0) {
+       const tradesLast24h = trades.filter((t) => now - t.time < dayWindowMs).length;
+@@ -227,6 +233,9 @@ async function runBacktestOnRawCandles(
+     });
+ 
+     lastSignalTime = now;
++    // Tant que ce trade n'a pas touché SL/TP (ou fin de données), la
++    // paire reste "occupée" — aucun nouveau trade possible dessus.
++    openPositionUntilTime = candles[exitIndex].openTime;
+ 
+     // Suivi de la série de pertes → pause simulée, comme en live
+     if (outcome === "SL") {
+@@ -259,6 +268,7 @@ async function runBacktestOnRawCandles(
+     timeframe,
+     bars: candles.length,
+     trades,
++    totalClosedTrades: closed.length,
+     winrate: closed.length ? wins / closed.length : null,
+     avgR,
+     sumR,

@@ -22,6 +22,7 @@ export type BacktestResult = {
   timeframe: string;
   bars: number;
   trades: BacktestTrade[];
+  totalClosedTrades: number;
   winrate: number | null;
   avgR: number;
   sumR: number;
@@ -153,6 +154,7 @@ async function runBacktestOnRawCandles(
 
   const candleMinutes = candleMinutesFor(timeframe);
   let lastSignalTime = -Infinity;
+  let openPositionUntilTime = -Infinity; // 1 position max par paire, comme en live
   let pausedUntilTime = -Infinity;
   let lossStreak = 0;
   const dayWindowMs = 24 * 60 * 60 * 1000;
@@ -165,6 +167,10 @@ async function runBacktestOnRawCandles(
 
     // 2) Cooldown entre 2 signaux (en vrai temps, pas en nombre de bougies)
     if (candleMinutes > 0 && (now - lastSignalTime) / 60000 < cooldownMinutes) continue;
+
+    // 2bis) 1 position max par paire — bloque tant que le trade précédent
+    // n'a pas touché SL/TP, exactement comme le guard demoExecutor en live.
+    if (now < openPositionUntilTime) continue;
 
     // 3) Limite de trades/jour (fenêtre glissante 24h, comme countSignalsToday)
     if (maxTradesPerDay > 0) {
@@ -227,6 +233,9 @@ async function runBacktestOnRawCandles(
     });
 
     lastSignalTime = now;
+    // Tant que ce trade n'a pas touché SL/TP (ou fin de données), la
+    // paire reste "occupée" — aucun nouveau trade possible dessus.
+    openPositionUntilTime = candles[exitIndex].openTime;
 
     // Suivi de la série de pertes → pause simulée, comme en live
     if (outcome === "SL") {
@@ -259,6 +268,7 @@ async function runBacktestOnRawCandles(
     timeframe,
     bars: candles.length,
     trades,
+    totalClosedTrades: closed.length,
     winrate: closed.length ? wins / closed.length : null,
     avgR,
     sumR,
