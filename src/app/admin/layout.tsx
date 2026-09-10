@@ -10,6 +10,7 @@ const NAV = [
   { href: "/admin/templates", label: "✉️ Templates" },
   { href: "/admin/subscribers", label: "👥 Abonnés" },
   { href: "/admin/backtest", label: "🧪 Backtest" },
+  { href: "/admin/history", label: "📜 Historique réel" },
   { href: "/admin/danger", label: "🔴 Zone réelle" },
 ];
 
