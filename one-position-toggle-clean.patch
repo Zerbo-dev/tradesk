@@ -1,0 +1,106 @@
+diff --git a/src/app/admin/backtest/page.tsx b/src/app/admin/backtest/page.tsx
+index fd42790..9477aca 100644
+--- a/src/app/admin/backtest/page.tsx
++++ b/src/app/admin/backtest/page.tsx
+@@ -45,6 +45,7 @@ export default function BacktestPage() {
+     pauseHours: string;
+     window: string;
+     useTp2: boolean;
++    onePositionPerPair: boolean;
+   }>({
+     minConfidence: "",
+     maxTradesPerDay: "",
+@@ -53,6 +54,7 @@ export default function BacktestPage() {
+     pauseHours: "",
+     window: "",
+     useTp2: false,
++    onePositionPerPair: true,
+   });
+ 
+   async function checkCache() {
+@@ -96,6 +98,7 @@ export default function BacktestPage() {
+     if (ov.pauseHours) params.set("pauseHours", ov.pauseHours);
+     if (ov.window) params.set("window", ov.window);
+     if (ov.useTp2) params.set("useTp2", "1");
++    if (!ov.onePositionPerPair) params.set("onePositionPerPair", "0");
+     const s = params.toString();
+     return s ? `&${s}` : "";
+   }
+@@ -283,6 +286,18 @@ export default function BacktestPage() {
+               />
+             </div>
+ 
++            <div className="toggle-row" style={{ marginTop: 4 }}>
++              <div>
++                <div className="toggle-label">1 position max par paire</div>
++                <div className="toggle-sub">Comme en live. Désactive pour voir l&apos;effet du chevauchement de trades.</div>
++              </div>
++              <div
++                className={`switch ${ov.onePositionPerPair ? "on" : ""}`}
++                role="switch"
++                onClick={() => setOv({ ...ov, onePositionPerPair: !ov.onePositionPerPair })}
++              />
++            </div>
++
+             <button
+               className="reset-link"
+               style={{ marginTop: 10 }}
+@@ -295,6 +310,7 @@ export default function BacktestPage() {
+                   pauseHours: "",
+                   window: "",
+                   useTp2: false,
++                  onePositionPerPair: true,
+                 })
+               }
+             >
+diff --git a/src/app/api/admin/backtest/route.ts b/src/app/api/admin/backtest/route.ts
+index 8d35bf8..29da272 100644
+--- a/src/app/api/admin/backtest/route.ts
++++ b/src/app/api/admin/backtest/route.ts
+@@ -24,6 +24,7 @@ function parseOverrides(sp: URLSearchParams): BacktestOverrides {
+     pauseHours: num("pauseHours"),
+     window: num("window"),
+     useTp2: sp.get("useTp2") === "1",
++    onePositionPerPair: sp.get("onePositionPerPair") !== "0",
+   };
+ }
+ 
+diff --git a/src/lib/backtest.ts b/src/lib/backtest.ts
+index dbc8e84..370791e 100644
+--- a/src/lib/backtest.ts
++++ b/src/lib/backtest.ts
+@@ -25,6 +25,7 @@ export type BacktestOverrides = {
+   pauseHours?: number;
+   window?: number;
+   useTp2?: boolean;
++  onePositionPerPair?: boolean;
+ };
+ 
+ export type BacktestResult = {
+@@ -163,6 +164,7 @@ async function runBacktestOnRawCandles(
+     overrides?.pauseAfterLossStreak ?? Number(rules.pause_after_loss_streak ?? 3);
+   const pauseHours = overrides?.pauseHours ?? Number(rules.pause_hours ?? 6);
+   const useTp2 = overrides?.useTp2 ?? false;
++  const onePositionPerPair = overrides?.onePositionPerPair ?? true;
+ 
+   const candles = toCandles(raw);
+   const WINDOW = overrides?.window ?? 120;
+@@ -186,7 +188,8 @@ async function runBacktestOnRawCandles(
+ 
+     // 2bis) 1 position max par paire — bloque tant que le trade précédent
+     // n'a pas touché SL/TP, exactement comme le guard demoExecutor en live.
+-    if (now < openPositionUntilTime) continue;
++    // Désactivable via overrides.onePositionPerPair pour comparer.
++    if (onePositionPerPair && now < openPositionUntilTime) continue;
+ 
+     // 3) Limite de trades/jour (fenêtre glissante 24h, comme countSignalsToday)
+     if (maxTradesPerDay > 0) {
+@@ -252,7 +255,7 @@ async function runBacktestOnRawCandles(
+     lastSignalTime = now;
+     // Tant que ce trade n'a pas touché SL/TP (ou fin de données), la
+     // paire reste "occupée" — aucun nouveau trade possible dessus.
+-    openPositionUntilTime = candles[exitIndex].openTime;
++    if (onePositionPerPair) openPositionUntilTime = candles[exitIndex].openTime;
+ 
+     // Suivi de la série de pertes → pause simulée, comme en live
+     if (outcome === "SL") {

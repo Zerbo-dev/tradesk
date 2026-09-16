@@ -24,6 +24,7 @@ function parseOverrides(sp: URLSearchParams): BacktestOverrides {
     pauseHours: num("pauseHours"),
     window: num("window"),
     useTp2: sp.get("useTp2") === "1",
+    onePositionPerPair: sp.get("onePositionPerPair") !== "0",
   };
 }
 

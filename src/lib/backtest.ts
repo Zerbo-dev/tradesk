@@ -25,6 +25,7 @@ export type BacktestOverrides = {
   pauseHours?: number;
   window?: number;
   useTp2?: boolean;
+  onePositionPerPair?: boolean;
 };
 
 export type BacktestResult = {
@@ -163,6 +164,7 @@ async function runBacktestOnRawCandles(
     overrides?.pauseAfterLossStreak ?? Number(rules.pause_after_loss_streak ?? 3);
   const pauseHours = overrides?.pauseHours ?? Number(rules.pause_hours ?? 6);
   const useTp2 = overrides?.useTp2 ?? false;
+  const onePositionPerPair = overrides?.onePositionPerPair ?? true;
 
   const candles = toCandles(raw);
   const WINDOW = overrides?.window ?? 120;
@@ -186,7 +188,8 @@ async function runBacktestOnRawCandles(
 
     // 2bis) 1 position max par paire — bloque tant que le trade précédent
     // n'a pas touché SL/TP, exactement comme le guard demoExecutor en live.
-    if (now < openPositionUntilTime) continue;
+    // Désactivable via overrides.onePositionPerPair pour comparer.
+    if (onePositionPerPair && now < openPositionUntilTime) continue;
 
     // 3) Limite de trades/jour (fenêtre glissante 24h, comme countSignalsToday)
     if (maxTradesPerDay > 0) {
@@ -252,7 +255,7 @@ async function runBacktestOnRawCandles(
     lastSignalTime = now;
     // Tant que ce trade n'a pas touché SL/TP (ou fin de données), la
     // paire reste "occupée" — aucun nouveau trade possible dessus.
-    openPositionUntilTime = candles[exitIndex].openTime;
+    if (onePositionPerPair) openPositionUntilTime = candles[exitIndex].openTime;
 
     // Suivi de la série de pertes → pause simulée, comme en live
     if (outcome === "SL") {

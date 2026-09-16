@@ -45,6 +45,7 @@ export default function BacktestPage() {
     pauseHours: string;
     window: string;
     useTp2: boolean;
+    onePositionPerPair: boolean;
   }>({
     minConfidence: "",
     maxTradesPerDay: "",
@@ -53,6 +54,7 @@ export default function BacktestPage() {
     pauseHours: "",
     window: "",
     useTp2: false,
+    onePositionPerPair: true,
   });
 
   async function checkCache() {
@@ -96,6 +98,7 @@ export default function BacktestPage() {
     if (ov.pauseHours) params.set("pauseHours", ov.pauseHours);
     if (ov.window) params.set("window", ov.window);
     if (ov.useTp2) params.set("useTp2", "1");
+    if (!ov.onePositionPerPair) params.set("onePositionPerPair", "0");
     const s = params.toString();
     return s ? `&${s}` : "";
   }
@@ -283,6 +286,18 @@ export default function BacktestPage() {
               />
             </div>
 
+            <div className="toggle-row" style={{ marginTop: 4 }}>
+              <div>
+                <div className="toggle-label">1 position max par paire</div>
+                <div className="toggle-sub">Comme en live. Désactive pour voir l&apos;effet du chevauchement de trades.</div>
+              </div>
+              <div
+                className={`switch ${ov.onePositionPerPair ? "on" : ""}`}
+                role="switch"
+                onClick={() => setOv({ ...ov, onePositionPerPair: !ov.onePositionPerPair })}
+              />
+            </div>
+
             <button
               className="reset-link"
               style={{ marginTop: 10 }}
@@ -295,6 +310,7 @@ export default function BacktestPage() {
                   pauseHours: "",
                   window: "",
                   useTp2: false,
+                  onePositionPerPair: true,
                 })
               }
             >
