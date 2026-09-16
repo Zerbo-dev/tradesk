@@ -35,6 +35,25 @@ export default function BacktestPage() {
   const [result, setResult] = useState<Result | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [liveRules, setLiveRules] = useState<Record<string, number> | null>(null);
+  const [ov, setOv] = useState<{
+    minConfidence: string;
+    maxTradesPerDay: string;
+    cooldownMinutes: string;
+    pauseAfterLossStreak: string;
+    pauseHours: string;
+    window: string;
+    useTp2: boolean;
+  }>({
+    minConfidence: "",
+    maxTradesPerDay: "",
+    cooldownMinutes: "",
+    pauseAfterLossStreak: "",
+    pauseHours: "",
+    window: "",
+    useTp2: false,
+  });
 
   async function checkCache() {
     if (source !== "deriv") return;
@@ -62,11 +81,32 @@ export default function BacktestPage() {
     }
   }
 
+  useEffect(() => {
+    fetch("/api/admin/rules")
+      .then((r) => r.json())
+      .then((d) => d.ok && setLiveRules(d.rules));
+  }, []);
+
+  function overridesQuery(): string {
+    const params = new URLSearchParams();
+    if (ov.minConfidence) params.set("minConfidence", ov.minConfidence);
+    if (ov.maxTradesPerDay) params.set("maxTradesPerDay", ov.maxTradesPerDay);
+    if (ov.cooldownMinutes) params.set("cooldownMinutes", ov.cooldownMinutes);
+    if (ov.pauseAfterLossStreak) params.set("pauseAfterLossStreak", ov.pauseAfterLossStreak);
+    if (ov.pauseHours) params.set("pauseHours", ov.pauseHours);
+    if (ov.window) params.set("window", ov.window);
+    if (ov.useTp2) params.set("useTp2", "1");
+    const s = params.toString();
+    return s ? `&${s}` : "";
+  }
+
   async function run() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/admin/backtest?source=${source}&pair=${pair}&timeframe=${timeframe}`);
+      const res = await fetch(
+        `/api/admin/backtest?source=${source}&pair=${pair}&timeframe=${timeframe}${overridesQuery()}`
+      );
       const data = await res.json();
       if (!res.ok || !data.ok) setError(data.error || "Échec");
       else {
@@ -149,6 +189,117 @@ export default function BacktestPage() {
             <p className="field-help">
               Connexion publique séparée de la session de trading — n&apos;interrompt jamais un trade en cours.
             </p>
+          </div>
+        )}
+
+        <button
+          className="btn"
+          style={{ marginTop: 14 }}
+          onClick={() => setShowAdvanced((v) => !v)}
+        >
+          {showAdvanced ? "▾" : "▸"} Paramètres avancés (backtest uniquement)
+        </button>
+
+        {showAdvanced && (
+          <div style={{ marginTop: 10, padding: 12, background: "var(--bg-elevated)", borderRadius: 9 }}>
+            <p className="field-help" style={{ marginBottom: 10 }}>
+              Écrase les règles live UNIQUEMENT pour ce test — ne modifie jamais le bot en
+              prod. Laisse vide pour garder la valeur live actuelle
+              {liveRules ? " (indiquée en placeholder)" : ""}.
+            </p>
+
+            <div className="row">
+              <div style={{ flex: 1 }}>
+                <label className="field-label" style={{ marginTop: 0 }}>Confiance min (2-5)</label>
+                <input
+                  type="number" className="input"
+                  placeholder={liveRules ? String(liveRules.min_confidence) : "3"}
+                  value={ov.minConfidence}
+                  onChange={(e) => setOv({ ...ov, minConfidence: e.target.value })}
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label className="field-label" style={{ marginTop: 0 }}>Max trades/jour</label>
+                <input
+                  type="number" className="input"
+                  placeholder={liveRules ? String(liveRules.max_trades_per_day) : "8"}
+                  value={ov.maxTradesPerDay}
+                  onChange={(e) => setOv({ ...ov, maxTradesPerDay: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="row" style={{ marginTop: 4 }}>
+              <div style={{ flex: 1 }}>
+                <label className="field-label">Cooldown (min)</label>
+                <input
+                  type="number" className="input"
+                  placeholder="4"
+                  value={ov.cooldownMinutes}
+                  onChange={(e) => setOv({ ...ov, cooldownMinutes: e.target.value })}
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label className="field-label">Fenêtre (bougies)</label>
+                <input
+                  type="number" className="input"
+                  placeholder="120"
+                  value={ov.window}
+                  onChange={(e) => setOv({ ...ov, window: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="row" style={{ marginTop: 4 }}>
+              <div style={{ flex: 1 }}>
+                <label className="field-label">Pause après N pertes</label>
+                <input
+                  type="number" className="input"
+                  placeholder={liveRules ? String(liveRules.pause_after_loss_streak) : "3"}
+                  value={ov.pauseAfterLossStreak}
+                  onChange={(e) => setOv({ ...ov, pauseAfterLossStreak: e.target.value })}
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label className="field-label">Durée pause (h)</label>
+                <input
+                  type="number" className="input"
+                  placeholder={liveRules ? String(liveRules.pause_hours) : "6"}
+                  value={ov.pauseHours}
+                  onChange={(e) => setOv({ ...ov, pauseHours: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="toggle-row" style={{ marginTop: 10 }}>
+              <div>
+                <div className="toggle-label">Viser TP2 au lieu de TP1</div>
+                <div className="toggle-sub">Le bot live envoie TP1 par défaut — teste ici si TP2 ferait mieux.</div>
+              </div>
+              <div
+                className={`switch ${ov.useTp2 ? "on" : ""}`}
+                role="switch"
+                onClick={() => setOv({ ...ov, useTp2: !ov.useTp2 })}
+              />
+            </div>
+
+            <button
+              className="reset-link"
+              style={{ marginTop: 10 }}
+              onClick={() =>
+                setOv({
+                  minConfidence: "",
+                  maxTradesPerDay: "",
+                  cooldownMinutes: "",
+                  pauseAfterLossStreak: "",
+                  pauseHours: "",
+                  window: "",
+                  useTp2: false,
+                })
+              }
+            >
+              Réinitialiser aux valeurs live
+            </button>
           </div>
         )}
 

@@ -5,26 +5,45 @@ import {
   runCryptoBacktestDeriv,
   fetchAndCacheDerivHistory,
   derivCacheStatus,
+  type BacktestOverrides,
 } from "@/lib/backtest";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
+function parseOverrides(sp: URLSearchParams): BacktestOverrides {
+  const num = (key: string) => {
+    const v = sp.get(key);
+    return v !== null && v !== "" ? Number(v) : undefined;
+  };
+  return {
+    minConfidence: num("minConfidence"),
+    maxTradesPerDay: num("maxTradesPerDay"),
+    cooldownMinutes: num("cooldownMinutes"),
+    pauseAfterLossStreak: num("pauseAfterLossStreak"),
+    pauseHours: num("pauseHours"),
+    window: num("window"),
+    useTp2: sp.get("useTp2") === "1",
+  };
+}
+
 export async function GET(req: NextRequest) {
   try {
-    const source = req.nextUrl.searchParams.get("source") || "forex";
-    const pair = req.nextUrl.searchParams.get("pair") || "EURUSD";
-    const timeframe = req.nextUrl.searchParams.get("timeframe") || "1h";
+    const sp = req.nextUrl.searchParams;
+    const source = sp.get("source") || "forex";
+    const pair = sp.get("pair") || "EURUSD";
+    const timeframe = sp.get("timeframe") || "1h";
 
     if (source === "deriv-status") {
       const status = await derivCacheStatus(pair, timeframe);
       return NextResponse.json({ ok: true, ...status });
     }
 
+    const overrides = parseOverrides(sp);
     const result =
       source === "deriv"
-        ? await runCryptoBacktestDeriv(pair, timeframe)
-        : await runCryptoBacktest(pair, timeframe);
+        ? await runCryptoBacktestDeriv(pair, timeframe, overrides)
+        : await runCryptoBacktest(pair, timeframe, overrides);
 
     return NextResponse.json({
       ok: true,

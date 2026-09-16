@@ -17,6 +17,16 @@ export type BacktestTrade = {
   r: number;
 };
 
+export type BacktestOverrides = {
+  minConfidence?: number;
+  maxTradesPerDay?: number;
+  cooldownMinutes?: number;
+  pauseAfterLossStreak?: number;
+  pauseHours?: number;
+  window?: number;
+  useTp2?: boolean;
+};
+
 export type BacktestResult = {
   pair: string;
   timeframe: string;
@@ -89,7 +99,8 @@ export async function derivCacheStatus(
 
 export async function runCryptoBacktestDeriv(
   pair: string,
-  timeframe: string
+  timeframe: string,
+  overrides?: BacktestOverrides
 ): Promise<BacktestResult> {
   const raw = await getMeta(derivCacheKey(pair, timeframe));
   if (!raw) {
@@ -98,7 +109,7 @@ export async function runCryptoBacktestDeriv(
     );
   }
   const parsed = JSON.parse(raw) as [number, number, number, number, number][];
-  return await runBacktestOnRawCandles(pair, timeframe, parsed);
+  return await runBacktestOnRawCandles(pair, timeframe, parsed, overrides);
 }
 
 function toCandles(raw: [number, number, number, number, number][]): Candle[] {
@@ -120,36 +131,41 @@ function toCandles(raw: [number, number, number, number, number][]): Candle[] {
  */
 export async function runCryptoBacktest(
   pair: string,
-  timeframe: string
+  timeframe: string,
+  overrides?: BacktestOverrides
 ): Promise<BacktestResult> {
   const data = loadHistoricalData();
   const raw = data[pair]?.[timeframe];
   if (!raw || raw.length < 150) {
     throw new Error(`Pas assez de données pour ${pair} ${timeframe}`);
   }
-  return runBacktestOnRawCandles(pair, timeframe, raw);
+  return runBacktestOnRawCandles(pair, timeframe, raw, overrides);
 }
 
 async function runBacktestOnRawCandles(
   pair: string,
   timeframe: string,
-  raw: [number, number, number, number, number][]
+  raw: [number, number, number, number, number][],
+  overrides?: BacktestOverrides
 ): Promise<BacktestResult> {
   if (raw.length < 150) {
     throw new Error(`Pas assez de données pour ${pair} ${timeframe}`);
   }
 
-  // Mêmes règles que le bot live (page Apprentissage / commande /learn) —
-  // si tu les changes là-bas, le backtest en tient compte automatiquement.
+  // Base = mêmes règles que le bot live (page Apprentissage / commande
+  // /learn). Un override, s'il est fourni, ne s'applique QU'À CE
+  // BACKTEST — il n'écrit jamais dans les règles réelles du bot.
   const rules = await getRules();
-  const minConf = Number(rules.min_confidence ?? 3);
-  const maxTradesPerDay = Number(rules.max_trades_per_day ?? 96);
-  const cooldownMinutes = Number(rules.analyze_cooldown_minutes ?? 4);
-  const pauseAfterLossStreak = Number(rules.pause_after_loss_streak ?? 3);
-  const pauseHours = Number(rules.pause_hours ?? 6);
+  const minConf = overrides?.minConfidence ?? Number(rules.min_confidence ?? 3);
+  const maxTradesPerDay = overrides?.maxTradesPerDay ?? Number(rules.max_trades_per_day ?? 96);
+  const cooldownMinutes = overrides?.cooldownMinutes ?? Number(rules.analyze_cooldown_minutes ?? 4);
+  const pauseAfterLossStreak =
+    overrides?.pauseAfterLossStreak ?? Number(rules.pause_after_loss_streak ?? 3);
+  const pauseHours = overrides?.pauseHours ?? Number(rules.pause_hours ?? 6);
+  const useTp2 = overrides?.useTp2 ?? false;
 
   const candles = toCandles(raw);
-  const WINDOW = 120;
+  const WINDOW = overrides?.window ?? 120;
   const trades: BacktestTrade[] = [];
 
   const candleMinutes = candleMinutesFor(timeframe);
@@ -190,11 +206,12 @@ async function runBacktestOnRawCandles(
     // 4) Filtre de confiance minimum (même seuil que le bot live)
     if (a.confidence < minConf) continue;
 
-    if (a.stopLoss == null || a.tp1 == null) continue;
+    const targetTp = useTp2 ? (a.tp2 ?? a.tp1) : a.tp1;
+    if (a.stopLoss == null || targetTp == null) continue;
 
     const entry = a.price;
     const stopLoss = a.stopLoss;
-    const tp1 = a.tp1;
+    const tp1 = targetTp;
     const risk = Math.abs(entry - stopLoss);
     if (risk <= 0) continue;
 
