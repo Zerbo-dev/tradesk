@@ -42,6 +42,21 @@ function requireRedirectUri(): string {
  * Étape 1 : génère state + PKCE, stocke le verifier (clé = state) et
  * renvoie l'URL d'autorisation Deriv vers laquelle rediriger l'utilisateur.
  */
+async function fetchWithTimeout(url: string, init: RequestInit, ms = 10_000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(`Deriv OAuth timeout (${ms / 1000}s) sur ${url}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function buildAuthorizationUrl(): Promise<string> {
   const env = getEnv();
   const redirectUri = requireRedirectUri();
@@ -101,7 +116,7 @@ export async function handleOauthCallback(
     code_verifier: entry.codeVerifier,
   });
 
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetchWithTimeout(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
@@ -140,7 +155,7 @@ async function refreshAccessToken(refreshToken: string): Promise<StoredTokens> {
     refresh_token: refreshToken,
   });
 
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetchWithTimeout(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
@@ -200,4 +215,28 @@ export async function getValidDerivAccessToken(): Promise<string> {
 export async function hasDerivOauthSession(): Promise<boolean> {
   const raw = await getMeta(TOKENS_KEY);
   return Boolean(raw);
+}
+
+export type DerivOauthStatus = {
+  connected: boolean;
+  expiresAt: number | null;
+  expiresInSeconds: number | null;
+  hasRefreshToken: boolean;
+};
+
+/** Statut détaillé pour l'admin — ne renvoie jamais les tokens eux-mêmes. */
+export async function getDerivOauthStatus(): Promise<DerivOauthStatus> {
+  const raw = await getMeta(TOKENS_KEY);
+  if (!raw) return { connected: false, expiresAt: null, expiresInSeconds: null, hasRefreshToken: false };
+  try {
+    const tokens = JSON.parse(raw) as StoredTokens;
+    return {
+      connected: true,
+      expiresAt: tokens.expiresAt,
+      expiresInSeconds: Math.round((tokens.expiresAt - Date.now()) / 1000),
+      hasRefreshToken: Boolean(tokens.refreshToken),
+    };
+  } catch {
+    return { connected: false, expiresAt: null, expiresInSeconds: null, hasRefreshToken: false };
+  }
 }

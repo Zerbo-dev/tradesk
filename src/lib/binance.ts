@@ -4,6 +4,21 @@ import type { Candle } from "./indicators";
 const BINANCE_DATA = "https://data-api.binance.vision";
 const BYBIT = "https://api.bybit.com";
 
+async function fetchWithTimeout(url: string, ms = 10_000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { cache: "no-store", signal: controller.signal });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(`Timeout (${ms / 1000}s) sur ${url}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function mapBinanceKlines(raw: unknown[]): Candle[] {
   return raw.map((row) => {
     const r = row as (string | number)[];
@@ -27,7 +42,7 @@ async function fetchBinanceDataApi(
   url.searchParams.set("symbol", symbol.replace("/", ""));
   url.searchParams.set("interval", interval);
   url.searchParams.set("limit", String(limit));
-  const res = await fetch(url.toString(), { cache: "no-store" });
+  const res = await fetchWithTimeout(url.toString());
   if (!res.ok) throw new Error(`BinanceData ${symbol}: ${res.status}`);
   return mapBinanceKlines((await res.json()) as unknown[]);
 }
@@ -50,7 +65,7 @@ async function fetchBybit(
   url.searchParams.set("symbol", symbol.replace("/", ""));
   url.searchParams.set("interval", intervalMap[interval] || "60");
   url.searchParams.set("limit", String(limit));
-  const res = await fetch(url.toString(), { cache: "no-store" });
+  const res = await fetchWithTimeout(url.toString());
   if (!res.ok) throw new Error(`Bybit ${symbol}: ${res.status}`);
   const data = (await res.json()) as {
     retCode: number;

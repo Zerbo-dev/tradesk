@@ -9,6 +9,7 @@ import {
 } from "../demo";
 import { publishSmcSignal } from "../telegram";
 import { getSettings } from "../settings";
+import { renderTemplate } from "../templates";
 import type { ScoredSetup } from "./types";
 
 /**
@@ -98,10 +99,17 @@ export async function executeDemoForSetup(
     });
     await saveOrders(orders);
 
-    return {
-      ok: true,
-      detail: `${(await isRealTradingActive()) ? "🔴 RÉEL" : "DEMO"} ${signal.direction} ${pair} qty=${order.qty} @ ${order.entryPrice}`,
-    };
+    const realMode = await isRealTradingActive();
+    const settings = await getSettings();
+    const rendered = renderTemplate(settings.orderOpenedTemplate, {
+      realBadge: realMode ? "🔴 RÉEL" : "DEMO",
+      direction: signal.direction,
+      pair,
+      qty: String(order.qty),
+      entryPrice: String(order.entryPrice),
+    });
+
+    return { ok: true, detail: rendered };
   } catch (err) {
     return {
       ok: false,
@@ -121,6 +129,7 @@ export async function syncSelectorDemoClosedTrades(): Promise<{
 }> {
   if (!(await demoEnabled())) return { closed: 0, details: [] };
 
+  const settings = await getSettings();
   const orders = await loadOrders();
   const openOrders = orders.filter((o) => o.status === "open");
   if (!openOrders.length) return { closed: 0, details: [] };
@@ -162,12 +171,17 @@ export async function syncSelectorDemoClosedTrades(): Promise<{
 
     closed += 1;
     const realMode = await isRealTradingActive();
-    const tag = realMode ? "RÉEL" : "DEMO";
-    const line = `${tag} CLOSE ${order.pair} ${order.direction} PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD (~${rMultiple >= 0 ? "+" : ""}${rMultiple.toFixed(2)}R)`;
-    details.push(line);
+    const rendered = renderTemplate(settings.orderClosedTemplate, {
+      realBadge: realMode ? "🔴 RÉEL" : "💰 DEMO",
+      pair: order.pair,
+      direction: order.direction,
+      pnl: `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD`,
+      rMultiple: `~${rMultiple >= 0 ? "+" : ""}${rMultiple.toFixed(2)}R`,
+    });
+    details.push(rendered);
 
     try {
-      await publishSmcSignal(`${realMode ? "🔴" : "💰"} ${line}`);
+      await publishSmcSignal(rendered);
     } catch {
       // recap best-effort — ne bloque pas la synchro des autres trades
     }

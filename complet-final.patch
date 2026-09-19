@@ -1,0 +1,1414 @@
+diff --git a/src/app/admin/backtest/page.tsx b/src/app/admin/backtest/page.tsx
+index 9477aca..2e75a30 100644
+--- a/src/app/admin/backtest/page.tsx
++++ b/src/app/admin/backtest/page.tsx
+@@ -19,6 +19,7 @@ type Result = {
+   avgR: number;
+   sumR: number;
+   maxDrawdownR: number;
++  truncated: boolean;
+ };
+ 
+ const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
+@@ -328,6 +329,13 @@ export default function BacktestPage() {
+       {result && (
+         <section className="card">
+           <h2 className="card-title">{result.pair} · {result.timeframe} · {result.bars} bougies</h2>
++          {result.truncated && (
++            <p className="toast toast-err" style={{ marginBottom: 10 }}>
++              ⚠️ Historique tronqué aux bougies les plus récentes (trop de données pour un
++              seul calcul) — réduis la période téléchargée ou choisis un timeframe plus large
++              pour un résultat complet.
++            </p>
++          )}
+           <div className="stat-line"><span>Trades clos (total)</span><b>{result.totalClosedTrades}</b></div>
+           <div className="stat-line">
+             <span>Winrate</span>
+diff --git a/src/app/admin/broadcast/page.tsx b/src/app/admin/broadcast/page.tsx
+new file mode 100644
+index 0000000..e9d8a10
+--- /dev/null
++++ b/src/app/admin/broadcast/page.tsx
+@@ -0,0 +1,82 @@
++"use client";
++
++import { useState } from "react";
++
++export default function BroadcastPage() {
++  const [feed, setFeed] = useState<"crypto" | "smc" | "both">("both");
++  const [message, setMessage] = useState("");
++  const [sending, setSending] = useState(false);
++  const [result, setResult] = useState<{ sent: number; failed: string[] } | null>(null);
++  const [error, setError] = useState<string | null>(null);
++
++  async function send() {
++    if (!message.trim()) {
++      setError("Message vide");
++      return;
++    }
++    if (!confirm(`Envoyer ce message à tous les abonnés (${feed}) ?`)) return;
++    setSending(true);
++    setError(null);
++    setResult(null);
++    try {
++      const res = await fetch("/api/admin/broadcast", {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({ feed, message }),
++      });
++      const data = await res.json();
++      if (!res.ok || !data.ok) setError(data.error || "Échec");
++      else {
++        setResult({ sent: data.sent, failed: data.failed });
++        setMessage("");
++      }
++    } catch {
++      setError("Erreur réseau");
++    } finally {
++      setSending(false);
++    }
++  }
++
++  return (
++    <>
++      <div className="admin-topbar">
++        <h1 style={{ fontFamily: "var(--display)", fontSize: 22 }}>Broadcast</h1>
++      </div>
++
++      <div className="banner banner-info">
++        Envoie un message manuel, immédiatement, à tes abonnés — pas lié à un signal
++        automatique (ex: annonce, maintenance, actu).
++      </div>
++
++      <section className="card">
++        <label className="field-label" style={{ marginTop: 0 }}>Destinataires</label>
++        <select className="input" value={feed} onChange={(e) => setFeed(e.target.value as typeof feed)}>
++          <option value="both">Tous les abonnés (crypto + SMC)</option>
++          <option value="crypto">Abonnés crypto seulement</option>
++          <option value="smc">Abonnés SMC seulement</option>
++        </select>
++
++        <label className="field-label">Message</label>
++        <textarea
++          className="input"
++          style={{ minHeight: 140 }}
++          value={message}
++          onChange={(e) => setMessage(e.target.value)}
++          placeholder="Ton message ici..."
++        />
++
++        <button className="btn btn-primary" style={{ marginTop: 14 }} onClick={send} disabled={sending}>
++          {sending ? "Envoi..." : "Envoyer maintenant"}
++        </button>
++
++        {error && <p className="toast toast-err" style={{ marginTop: 10 }}>{error}</p>}
++        {result && (
++          <p className="toast toast-ok" style={{ marginTop: 10 }}>
++            Envoyé à {result.sent} abonné(s).
++            {result.failed.length > 0 && ` Échecs : ${result.failed.join(", ")}`}
++          </p>
++        )}
++      </section>
++    </>
++  );
++}
+diff --git a/src/app/admin/layout.tsx b/src/app/admin/layout.tsx
+index f42df57..d28219e 100644
+--- a/src/app/admin/layout.tsx
++++ b/src/app/admin/layout.tsx
+@@ -9,8 +9,10 @@ const NAV = [
+   { href: "/admin/learning", label: "🧠 Apprentissage" },
+   { href: "/admin/templates", label: "✉️ Templates" },
+   { href: "/admin/subscribers", label: "👥 Abonnés" },
++  { href: "/admin/broadcast", label: "📢 Broadcast" },
+   { href: "/admin/backtest", label: "🧪 Backtest" },
+   { href: "/admin/history", label: "📜 Historique réel" },
++  { href: "/admin/team", label: "🔑 Équipe & connexions" },
+   { href: "/admin/danger", label: "🔴 Zone réelle" },
+ ];
+ 
+diff --git a/src/app/admin/team/page.tsx b/src/app/admin/team/page.tsx
+new file mode 100644
+index 0000000..bc2ba4b
+--- /dev/null
++++ b/src/app/admin/team/page.tsx
+@@ -0,0 +1,134 @@
++"use client";
++
++import { useEffect, useState } from "react";
++
++type Admin = { id: string; chatId: string; label: string; createdAt: string };
++type DerivStatus = { connected: boolean; expiresAt: number | null; expiresInSeconds: number | null; hasRefreshToken: boolean };
++
++export default function TeamPage() {
++  const [admins, setAdmins] = useState<Admin[]>([]);
++  const [chatId, setChatId] = useState("");
++  const [label, setLabel] = useState("");
++  const [error, setError] = useState<string | null>(null);
++  const [derivStatus, setDerivStatus] = useState<DerivStatus | null>(null);
++
++  async function load() {
++    const res = await fetch("/api/admin/admins").then((r) => r.json());
++    if (res.ok) setAdmins(res.admins);
++    const ds = await fetch("/api/admin/deriv-status").then((r) => r.json());
++    if (ds.ok) setDerivStatus(ds.status);
++  }
++
++  useEffect(() => {
++    load();
++  }, []);
++
++  async function add() {
++    setError(null);
++    if (!chatId.trim()) {
++      setError("chat_id requis");
++      return;
++    }
++    const res = await fetch("/api/admin/admins", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ chatId, label }),
++    });
++    const data = await res.json();
++    if (data.ok) {
++      setAdmins(data.admins);
++      setChatId("");
++      setLabel("");
++    } else {
++      setError(data.error || "Échec");
++    }
++  }
++
++  async function del(id: string) {
++    if (!confirm("Retirer cet admin ?")) return;
++    const res = await fetch("/api/admin/admins", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ action: "delete", id }),
++    });
++    const data = await res.json();
++    if (data.ok) setAdmins(data.admins);
++  }
++
++  const expiresInMin = derivStatus?.expiresInSeconds != null ? Math.round(derivStatus.expiresInSeconds / 60) : null;
++  const soonExpired = expiresInMin !== null && expiresInMin < 10;
++
++  return (
++    <>
++      <div className="admin-topbar">
++        <h1 style={{ fontFamily: "var(--display)", fontSize: 22 }}>Équipe & connexions</h1>
++      </div>
++
++      <section className="card">
++        <h2 className="card-title">Connexion Deriv</h2>
++        {!derivStatus?.connected && (
++          <>
++            <p className="toast toast-err">Aucune session Deriv active — les ordres ne peuvent pas être passés.</p>
++            <a className="btn btn-primary" href="/api/auth/deriv/start" style={{ display: "inline-block", marginTop: 8 }}>
++              Se connecter à Deriv
++            </a>
++          </>
++        )}
++        {derivStatus?.connected && (
++          <>
++            <div className="stat-line">
++              <span>Statut</span>
++              <b style={{ color: soonExpired ? "var(--red)" : "var(--green)" }}>
++                {soonExpired ? "⚠️ Expire bientôt" : "✅ Connecté"}
++              </b>
++            </div>
++            <div className="stat-line">
++              <span>Access token expire dans</span>
++              <b>{expiresInMin !== null ? `${expiresInMin} min` : "n/a"}</b>
++            </div>
++            <div className="stat-line">
++              <span>Refresh automatique</span>
++              <b>{derivStatus.hasRefreshToken ? "✅ actif" : "⚠️ absent — reconnexion manuelle requise"}</b>
++            </div>
++            <p className="field-help">
++              L&apos;access token se rafraîchit tout seul tant que le refresh token est valide.
++              Si tu vois des erreurs répétées ou &quot;aucun refresh token&quot;, reconnecte-toi.
++            </p>
++            <a className="btn" href="/api/auth/deriv/start" style={{ display: "inline-block", marginTop: 8 }}>
++              Se reconnecter
++            </a>
++          </>
++        )}
++        <button className="btn btn-ghost" style={{ marginLeft: 8 }} onClick={load}>Rafraîchir</button>
++      </section>
++
++      <section className="card">
++        <h2 className="card-title">Admins Telegram (alertes)</h2>
++        <p className="card-sub">
++          En plus de ADMIN_IDS (variable d&apos;env). Un admin doit d&apos;abord envoyer{" "}
++          <code>/monid</code> au bot pour récupérer son chat_id.
++        </p>
++
++        <label className="field-label" style={{ marginTop: 0 }}>chat_id</label>
++        <input className="input" value={chatId} onChange={(e) => setChatId(e.target.value)} placeholder="123456789" />
++        <label className="field-label">Nom</label>
++        <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="ex: Ben (co-admin)" />
++        <button className="btn btn-primary" style={{ marginTop: 14 }} onClick={add}>Ajouter</button>
++        {error && <p className="toast toast-err" style={{ marginTop: 10 }}>{error}</p>}
++
++        <div style={{ marginTop: 16 }}>
++          {admins.length === 0 && <p className="card-sub">Aucun admin supplémentaire.</p>}
++          {admins.map((a) => (
++            <div key={a.id} className="row" style={{ borderTop: "1px solid var(--line)", padding: "10px 0" }}>
++              <div>
++                <div style={{ fontWeight: 700, fontSize: 13.5 }}>{a.label}</div>
++                <div className="field-help">chat_id: {a.chatId}</div>
++              </div>
++              <button className="btn btn-ghost" onClick={() => del(a.id)}>Retirer</button>
++            </div>
++          ))}
++        </div>
++      </section>
++    </>
++  );
++}
+diff --git a/src/app/admin/templates/page.tsx b/src/app/admin/templates/page.tsx
+index 076668a..7d14de4 100644
+--- a/src/app/admin/templates/page.tsx
++++ b/src/app/admin/templates/page.tsx
+@@ -6,6 +6,9 @@ type Templates = {
+   cryptoSignalTemplate: string;
+   xauSignalTemplate: string;
+   v100SignalTemplate: string;
++  orderOpenedTemplate: string;
++  orderClosedTemplate: string;
++  orderErrorTemplate: string;
+   [key: string]: unknown;
+ };
+ 
+@@ -17,11 +20,56 @@ const TEMPLATE_TOKENS: Record<string, string[]> = {
+   ],
+   xauSignalTemplate: ["direction", "directionEmoji", "timeframe", "setup", "entryLow", "entryHigh", "stopLoss", "tp1", "tp2", "tp3", "rr", "time"],
+   v100SignalTemplate: ["direction", "directionEmoji", "timeframe", "setup", "oteLow", "oteHigh", "entryLow", "entryHigh", "stopLoss", "slNote", "tp1", "tp2", "tp3", "rr", "time", "confluence"],
++  orderOpenedTemplate: ["realBadge", "direction", "pair", "qty", "entryPrice"],
++  orderClosedTemplate: ["realBadge", "pair", "direction", "pnl", "rMultiple"],
++  orderErrorTemplate: ["realBadge", "pair", "detail"],
+ };
+ 
++const SAMPLE_DATA: Record<string, Record<string, string>> = {
++  cryptoSignalTemplate: {
++    pair: "BTCUSDT", timeframe: "1h", direction: "LONG", directionEmoji: "🟢",
++    price: "64250.5", ema20: "64100", ema50: "63800", rsi: "58.2", changePct: "+1.3",
++    entryLow: "64100", entryHigh: "64300", stopLoss: "63900", tp1: "64600", tp2: "64900",
++    tradeLines: "Entrée : 64100 – 64300\nSL : 63900\nTP1 : 64600\nTP2 : 64900",
++    setup: "trend_pullback", confidenceStars: "★★★★☆",
++    rationale: "EMA20 > EMA50 · RSI 58.2 · pullback tendance haussière",
++    signalIdLine: "ID #1234",
++  },
++  xauSignalTemplate: {
++    direction: "BUY", directionEmoji: "BUY 🟢", timeframe: "M5 avec confirmation M3",
++    setup: "FVG + Liquidité", entryLow: "2650.10", entryHigh: "2652.40",
++    stopLoss: "2648.00", tp1: "2655.00", tp2: "2658.50", tp3: "2662.00",
++    rr: "1:2.0", time: "10/09/2026 14:30 GMT+0",
++  },
++  v100SignalTemplate: {
++    direction: "SELL", directionEmoji: "SELL 🔴", timeframe: "M15",
++    setup: "SMC - Zone OTE + FVG", oteLow: "612.40", oteHigh: "615.80",
++    entryLow: "613.00", entryHigh: "614.20", stopLoss: "617.00", slNote: "*Au-dessus OTE*",
++    tp1: "608.00", tp2: "604.50", tp3: "601.00", rr: "1:2.1",
++    time: "10/09/2026 14:30 GMT+0", confluence: "OTE + FVG · biais M30/M15 SELL",
++  },
++  orderOpenedTemplate: {
++    realBadge: "💰 DEMO", direction: "LONG", pair: "ETHUSDT", qty: "50", entryPrice: "2450.30",
++  },
++  orderClosedTemplate: {
++    realBadge: "💰 DEMO", pair: "#1234 ETHUSDT", direction: "LONG",
++    pnl: "+12.40 USDT", rMultiple: "~+1.80R",
++  },
++  orderErrorTemplate: {
++    realBadge: "DEMO", pair: "ETHUSDT", detail: "Trading is not offered for this asset.",
++  },
++};
++
++function renderPreview(template: string, tokens: Record<string, string>): string {
++  return template.replace(/\{(\w+)\}/g, (match, key) =>
++    Object.prototype.hasOwnProperty.call(tokens, key) ? tokens[key] : match
++  );
++}
++
+ export default function TemplatesPage() {
+   const [settings, setSettings] = useState<Templates | null>(null);
+   const [savedAt, setSavedAt] = useState<number | null>(null);
++  const [showPreview, setShowPreview] = useState<Record<string, boolean>>({});
+ 
+   useEffect(() => {
+     fetch("/api/admin/settings").then((r) => r.json()).then((d) => d.ok && setSettings(d.settings));
+@@ -43,6 +91,15 @@ export default function TemplatesPage() {
+ 
+   if (!settings) return <p>Chargement...</p>;
+ 
++  const groups: [string, string][] = [
++    ["cryptoSignalTemplate", "Signal bot crypto (BTC/ETH/SOL...)"],
++    ["xauSignalTemplate", "Signal XAUUSD (SMC)"],
++    ["v100SignalTemplate", "Signal V100 (SMC)"],
++    ["orderOpenedTemplate", "Ordre ouvert (démo + réel)"],
++    ["orderClosedTemplate", "Ordre clôturé (recap)"],
++    ["orderErrorTemplate", "Erreur d'ouverture d'ordre"],
++  ];
++
+   return (
+     <>
+       <div className="admin-topbar">
+@@ -50,22 +107,27 @@ export default function TemplatesPage() {
+       </div>
+       {savedAt && <div className="toast toast-ok">Enregistré ✓</div>}
+ 
+-      <section className="card">
+-        <p className="card-sub">
+-          Tokens <code>{"{comme_ça}"}</code> remplacés à l&apos;envoi. Vide = format par défaut.
+-        </p>
++      <div className="banner banner-info">
++        Tokens <code>{"{comme_ça}"}</code> remplacés à l&apos;envoi. Vide = format par défaut.
++        Clique &quot;Aperçu&quot; pour voir le rendu avec des données d&apos;exemple.
++      </div>
+ 
+-        {([
+-          ["cryptoSignalTemplate", "Signal bot crypto (BTC/ETH/SOL...)"],
+-          ["xauSignalTemplate", "Signal XAUUSD (SMC)"],
+-          ["v100SignalTemplate", "Signal V100 (SMC)"],
+-        ] as const).map(([key, title]) => (
++      <section className="card">
++        {groups.map(([key, title]) => (
+           <div key={key} style={{ marginTop: 20 }}>
+             <div className="row">
+               <label className="field-label" style={{ margin: 0 }}>{title}</label>
+-              <button className="reset-link" onClick={() => save({ [key]: "" } as Partial<Templates>)}>
+-                Réinitialiser au défaut
+-              </button>
++              <div style={{ display: "flex", gap: 10 }}>
++                <button
++                  className="reset-link"
++                  onClick={() => setShowPreview({ ...showPreview, [key]: !showPreview[key] })}
++                >
++                  {showPreview[key] ? "Masquer l'aperçu" : "Aperçu"}
++                </button>
++                <button className="reset-link" onClick={() => save({ [key]: "" } as Partial<Templates>)}>
++                  Réinitialiser au défaut
++                </button>
++              </div>
+             </div>
+             <textarea
+               className="input"
+@@ -74,6 +136,23 @@ export default function TemplatesPage() {
+               onBlur={() => save({ [key]: settings[key] } as Partial<Templates>)}
+             />
+             <p className="field-help">Tokens : {TEMPLATE_TOKENS[key].map((t) => `{${t}}`).join(", ")}</p>
++
++            {showPreview[key] && (
++              <div
++                style={{
++                  marginTop: 8,
++                  padding: 12,
++                  background: "var(--bg-elevated)",
++                  borderRadius: 9,
++                  fontSize: 12.5,
++                  fontFamily: "ui-monospace, monospace",
++                  whiteSpace: "pre-wrap",
++                  color: "var(--text-soft)",
++                }}
++              >
++                {renderPreview(settings[key] as string, SAMPLE_DATA[key] || {})}
++              </div>
++            )}
+           </div>
+         ))}
+       </section>
+diff --git a/src/app/api/admin/admins/route.ts b/src/app/api/admin/admins/route.ts
+new file mode 100644
+index 0000000..2f4a5ab
+--- /dev/null
++++ b/src/app/api/admin/admins/route.ts
+@@ -0,0 +1,26 @@
++import { NextRequest, NextResponse } from "next/server";
++import { listExtraAdmins, addExtraAdmin, removeExtraAdmin } from "@/lib/admins";
++
++export const runtime = "nodejs";
++
++export async function GET() {
++  const admins = await listExtraAdmins();
++  return NextResponse.json({ ok: true, admins });
++}
++
++export async function POST(req: NextRequest) {
++  try {
++    const body = await req.json();
++    if (body.action === "delete") {
++      const admins = await removeExtraAdmin(body.id);
++      return NextResponse.json({ ok: true, admins });
++    }
++    const admins = await addExtraAdmin(body.chatId, body.label || "");
++    return NextResponse.json({ ok: true, admins });
++  } catch (err) {
++    return NextResponse.json(
++      { ok: false, error: err instanceof Error ? err.message : "erreur" },
++      { status: 500 }
++    );
++  }
++}
+diff --git a/src/app/api/admin/broadcast/route.ts b/src/app/api/admin/broadcast/route.ts
+new file mode 100644
+index 0000000..be97f41
+--- /dev/null
++++ b/src/app/api/admin/broadcast/route.ts
+@@ -0,0 +1,31 @@
++import { NextRequest, NextResponse } from "next/server";
++import { broadcastToSubscribers } from "@/lib/subscribers";
++
++export const runtime = "nodejs";
++export const maxDuration = 60;
++
++export async function POST(req: NextRequest) {
++  try {
++    const body = (await req.json()) as { feed: "crypto" | "smc" | "both"; message: string };
++    if (!body.message?.trim()) {
++      return NextResponse.json({ ok: false, error: "Message vide" }, { status: 400 });
++    }
++
++    const results: { sent: number; failed: string[] }[] = [];
++    if (body.feed === "both") {
++      results.push(await broadcastToSubscribers("crypto", body.message));
++      results.push(await broadcastToSubscribers("smc", body.message));
++    } else {
++      results.push(await broadcastToSubscribers(body.feed, body.message));
++    }
++
++    const sent = results.reduce((s, r) => s + r.sent, 0);
++    const failed = results.flatMap((r) => r.failed);
++    return NextResponse.json({ ok: true, sent, failed });
++  } catch (err) {
++    return NextResponse.json(
++      { ok: false, error: err instanceof Error ? err.message : "erreur" },
++      { status: 500 }
++    );
++  }
++}
+diff --git a/src/app/api/admin/deriv-status/route.ts b/src/app/api/admin/deriv-status/route.ts
+new file mode 100644
+index 0000000..27eb0b6
+--- /dev/null
++++ b/src/app/api/admin/deriv-status/route.ts
+@@ -0,0 +1,16 @@
++import { NextResponse } from "next/server";
++import { getDerivOauthStatus } from "@/lib/demo/derivAuth";
++
++export const runtime = "nodejs";
++
++export async function GET() {
++  try {
++    const status = await getDerivOauthStatus();
++    return NextResponse.json({ ok: true, status });
++  } catch (err) {
++    return NextResponse.json(
++      { ok: false, error: err instanceof Error ? err.message : "erreur" },
++      { status: 500 }
++    );
++  }
++}
+diff --git a/src/app/api/cron/analyze-smc/route.ts b/src/app/api/cron/analyze-smc/route.ts
+index 3740445..98ac8d9 100644
+--- a/src/app/api/cron/analyze-smc/route.ts
++++ b/src/app/api/cron/analyze-smc/route.ts
+@@ -39,7 +39,7 @@ async function run(force = false) {
+     try {
+       const text = await formatSmcSignal(signal);
+       const pub = await publishSmcSignal(text);
+-      broadcastToSubscribers("smc", text).catch(() => {});
++      await broadcastToSubscribers("smc", text).catch(() => ({ sent: 0, failed: [], skipped: 0 }));
+       if (pub.errors.length) {
+         publishErrors.push(...pub.errors.map((e) => `${signal.pair}: ${e}`));
+       }
+diff --git a/src/app/api/cron/analyze/route.ts b/src/app/api/cron/analyze/route.ts
+index 4d6ca7f..92f6caf 100644
+--- a/src/app/api/cron/analyze/route.ts
++++ b/src/app/api/cron/analyze/route.ts
+@@ -3,6 +3,10 @@ import { getEnv } from "@/lib/env";
+ import { getSettings } from "@/lib/settings";
+ import { runAllAnalyses } from "@/lib/analysis";
+ import { formatAnalysis } from "@/lib/format";
++import { renderTemplate } from "@/lib/templates";
++import { withTimeout } from "@/lib/withTimeout";
++import { makeDeadline } from "@/lib/deadline";
++import { notifyAdminsThrottled } from "@/lib/admins";
+ import { broadcastToSubscribers } from "@/lib/subscribers";
+ import { publishAnalysis } from "@/lib/telegram";
+ import { setMeta, updateSignal } from "@/lib/db";
+@@ -28,6 +32,9 @@ async function run(force = false) {
+   const env = getEnv();
+   const settings = await getSettings();
+   const demoActive = await demoEnabled();
++  // Marge de 15s sous maxDuration=60s pour le reste du travail (fetch
++  // prix, DB, formatage...). Partagé entre TOUTES les paires de ce tick.
++  const deadline = makeDeadline(45_000);
+ 
+   // 1) Sync clôtures compte démo (si activé)
+   const demoSync = demoActive
+@@ -63,27 +70,61 @@ async function run(force = false) {
+ 
+       // 3b) Exécution démo/réelle sur LONG/SHORT
+       if (demoActive && (a.direction === "LONG" || a.direction === "SHORT")) {
++        if (deadline.expired()) {
++          text += "\n\n⚠️ Budget temps épuisé pour ce tick — exécution démo reportée au prochain cron.";
++        } else {
+         try {
+-          const demo = await executeDemoForAnalysis(a);
++          const demo = await withTimeout(
++            executeDemoForAnalysis(a),
++            Math.min(20_000, deadline.remainingMs()),
++            `exécution démo ${a.pair}`
++          );
+           const realMode = await isRealTradingActive();
+-          if (demo.ok) {
++          const realBadge = realMode ? "🔴 ORDRE RÉEL" : "💰 DEMO";
++          if (demo.ok && demo.order) {
+             demoOrders.push(demo.detail);
+-            text += realMode
+-              ? `\n\n🔴 ORDRE RÉEL (argent véritable)\n${demo.detail}`
+-              : `\n\n💰 TRADE ORDER\n${demo.detail}`;
++            const rendered = renderTemplate(settings.orderOpenedTemplate, {
++              realBadge,
++              direction: a.direction,
++              pair: demo.order.symbol,
++              qty: String(demo.order.qty),
++              entryPrice: String(demo.order.entryPrice),
++            });
++            text += `\n\n${rendered}`;
+           } else if (demo.detail !== "demo off" && demo.detail !== "neutral skip") {
+             demoOrders.push(`${a.pair}: ${demo.detail}`);
+-            text += realMode ? `\n\n⚠️ RÉEL: ${demo.detail}` : `\n\n⚠️ DEMO: ${demo.detail}`;
++            const rendered = renderTemplate(settings.orderErrorTemplate, {
++              realBadge: realMode ? "RÉEL" : "DEMO",
++              pair: a.pair,
++              detail: demo.detail,
++            });
++            text += `\n\n${rendered}`;
+           }
+         } catch (err) {
+           const msg = err instanceof Error ? err.message : "demo error";
+           demoOrders.push(`${a.pair}: ${msg}`);
+           text += `\n\n⚠️ TRADE ERROR: ${msg}`;
++
++          const isAuthOrTimeout =
++            /timeout|oauth|token|refresh_token|invalid/i.test(msg);
++          if (isAuthOrTimeout) {
++            await notifyAdminsThrottled(
++              "deriv_exec_error",
++              `🔴 Problème d'exécution Deriv (${a.pair})\n${msg}\n\nVérifie /admin (Zone réelle / reconnexion) — les signaux continuent d'être publiés mais aucun ordre n'est passé tant que ce n'est pas résolu.`
++            ).catch(() => {});
++          }
++        }
+         }
+       }
+ 
+       const pub = await publishAnalysis(text, { dm: true });
+-      broadcastToSubscribers("crypto", text).catch(() => {});
++      if (!deadline.expired()) {
++        await broadcastToSubscribers(
++          "crypto",
++          text,
++          Math.min(15_000, deadline.remainingMs())
++        ).catch(() => ({ sent: 0, failed: [], skipped: 0 }));
++      }
+       if (pub.errors.length) errors.push(...pub.errors.map((e) => `${a.pair}: ${e}`));
+       if (pub.delivered && a.signalId) {
+         if (pub.channelMessageId) {
+diff --git a/src/app/api/cron/smc-selector/route.ts b/src/app/api/cron/smc-selector/route.ts
+index 0d7532d..3d52774 100644
+--- a/src/app/api/cron/smc-selector/route.ts
++++ b/src/app/api/cron/smc-selector/route.ts
+@@ -9,6 +9,8 @@ import {
+ import { formatSmcSignal } from "@/lib/smc/format";
+ import { publishSmcSignal } from "@/lib/telegram";
+ import { broadcastToSubscribers } from "@/lib/subscribers";
++import { withTimeout } from "@/lib/withTimeout";
++import { notifyAdminsThrottled } from "@/lib/admins";
+ 
+ export const runtime = "nodejs";
+ export const maxDuration = 60;
+@@ -46,7 +48,7 @@ async function run() {
+     try {
+       const text = await formatSmcSignal(setup.signal);
+       const pub = await publishSmcSignal(text);
+-      broadcastToSubscribers("smc", text).catch(() => {});
++      await broadcastToSubscribers("smc", text).catch(() => ({ sent: 0, failed: [], skipped: 0 }));
+       if (pub.errors.length) {
+         publishErrors.push(...pub.errors.map((e) => `${setup.pair}: ${e}`));
+       }
+@@ -63,12 +65,21 @@ async function run() {
+     //    signal — le canal doit recevoir le signal même si le trade démo
+     //    échoue).
+     try {
+-      const demo = await executeDemoForSetup(setup);
++      const demo = await withTimeout(
++        executeDemoForSetup(setup),
++        25_000,
++        `exécution démo ${setup.pair}`
++      );
+       demoResults.push(`${setup.pair}: ${demo.detail}`);
+     } catch (err) {
+-      demoResults.push(
+-        `${setup.pair}: erreur démo ${err instanceof Error ? err.message : "inconnue"}`
+-      );
++      const msg = err instanceof Error ? err.message : "inconnue";
++      demoResults.push(`${setup.pair}: erreur démo ${msg}`);
++      if (/timeout|oauth|token|refresh_token|invalid/i.test(msg)) {
++        await notifyAdminsThrottled(
++          "deriv_exec_error",
++          `🔴 Problème d'exécution Deriv (${setup.pair})\n${msg}\n\nVérifie /admin (Zone réelle / reconnexion) — les signaux continuent d'être publiés mais aucun ordre n'est passé tant que ce n'est pas résolu.`
++        ).catch(() => {});
++      }
+     }
+   }
+ 
+diff --git a/src/lib/admins.ts b/src/lib/admins.ts
+new file mode 100644
+index 0000000..dad6fe9
+--- /dev/null
++++ b/src/lib/admins.ts
+@@ -0,0 +1,72 @@
++import { getEnv } from "./env";
++import { getMeta, setMeta } from "./db";
++import { sendMessage } from "./telegram";
++
++export type AdminEntry = {
++  id: string;
++  chatId: string;
++  label: string;
++  createdAt: string;
++};
++
++const KEY = "extra_admins_v1";
++const ALERT_THROTTLE_MS = 15 * 60 * 1000;
++
++export async function listExtraAdmins(): Promise<AdminEntry[]> {
++  const raw = await getMeta(KEY);
++  if (!raw) return [];
++  try {
++    return JSON.parse(raw) as AdminEntry[];
++  } catch {
++    return [];
++  }
++}
++
++async function saveExtraAdmins(list: AdminEntry[]): Promise<void> {
++  await setMeta(KEY, JSON.stringify(list));
++}
++
++export async function addExtraAdmin(chatId: string, label: string): Promise<AdminEntry[]> {
++  const list = await listExtraAdmins();
++  list.push({
++    id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
++    chatId: chatId.trim(),
++    label: label.trim() || chatId.trim(),
++    createdAt: new Date().toISOString(),
++  });
++  await saveExtraAdmins(list);
++  return list;
++}
++
++export async function removeExtraAdmin(id: string): Promise<AdminEntry[]> {
++  const list = await listExtraAdmins();
++  const next = list.filter((a) => a.id !== id);
++  await saveExtraAdmins(next);
++  return next;
++}
++
++export async function getEffectiveAdminChatIds(): Promise<string[]> {
++  const env = getEnv();
++  const extra = await listExtraAdmins();
++  const set = new Set<string>([...[...env.adminIds].map(String), ...extra.map((a) => a.chatId)]);
++  return [...set];
++}
++
++export async function notifyAdmins(text: string): Promise<void> {
++  const ids = await getEffectiveAdminChatIds();
++  await Promise.all(
++    ids.map((id) =>
++      sendMessage(id, text).catch(() => {
++        /* best-effort */
++      })
++    )
++  );
++}
++
++export async function notifyAdminsThrottled(key: string, text: string): Promise<void> {
++  const throttleKey = `alert_throttle_${key}`;
++  const last = await getMeta(throttleKey);
++  if (last && Date.now() - new Date(last).getTime() < ALERT_THROTTLE_MS) return;
++  await setMeta(throttleKey, new Date().toISOString());
++  await notifyAdmins(text);
++}
+diff --git a/src/lib/backtest.ts b/src/lib/backtest.ts
+index 370791e..177155f 100644
+--- a/src/lib/backtest.ts
++++ b/src/lib/backtest.ts
+@@ -38,6 +38,7 @@ export type BacktestResult = {
+   avgR: number;
+   sumR: number;
+   maxDrawdownR: number;
++  truncated: boolean;
+ };
+ 
+ let cachedData: Record<string, Record<string, [number, number, number, number, number][]>> | null = null;
+@@ -166,7 +167,14 @@ async function runBacktestOnRawCandles(
+   const useTp2 = overrides?.useTp2 ?? false;
+   const onePositionPerPair = overrides?.onePositionPerPair ?? true;
+ 
+-  const candles = toCandles(raw);
++  // Sécurité serverless : au-delà, on garde seulement les bougies les
++  // plus récentes plutôt que de risquer un timeout Vercel en pleine
++  // requête (arrive surtout en 1m/5m avec beaucoup d'historique en cache).
++  const MAX_CANDLES = 20_000;
++  const allCandles = toCandles(raw);
++  const candles = allCandles.length > MAX_CANDLES ? allCandles.slice(-MAX_CANDLES) : allCandles;
++  const truncated = allCandles.length > MAX_CANDLES;
++
+   const WINDOW = overrides?.window ?? 120;
+   const trades: BacktestTrade[] = [];
+ 
+@@ -293,6 +301,7 @@ async function runBacktestOnRawCandles(
+     avgR,
+     sumR,
+     maxDrawdownR: maxDD,
++    truncated,
+   };
+ }
+ 
+diff --git a/src/lib/binance.ts b/src/lib/binance.ts
+index 89df838..f08536a 100644
+--- a/src/lib/binance.ts
++++ b/src/lib/binance.ts
+@@ -4,6 +4,21 @@ import type { Candle } from "./indicators";
+ const BINANCE_DATA = "https://data-api.binance.vision";
+ const BYBIT = "https://api.bybit.com";
+ 
++async function fetchWithTimeout(url: string, ms = 10_000): Promise<Response> {
++  const controller = new AbortController();
++  const timer = setTimeout(() => controller.abort(), ms);
++  try {
++    return await fetch(url, { cache: "no-store", signal: controller.signal });
++  } catch (err) {
++    if (err instanceof Error && err.name === "AbortError") {
++      throw new Error(`Timeout (${ms / 1000}s) sur ${url}`);
++    }
++    throw err;
++  } finally {
++    clearTimeout(timer);
++  }
++}
++
+ function mapBinanceKlines(raw: unknown[]): Candle[] {
+   return raw.map((row) => {
+     const r = row as (string | number)[];
+@@ -27,7 +42,7 @@ async function fetchBinanceDataApi(
+   url.searchParams.set("symbol", symbol.replace("/", ""));
+   url.searchParams.set("interval", interval);
+   url.searchParams.set("limit", String(limit));
+-  const res = await fetch(url.toString(), { cache: "no-store" });
++  const res = await fetchWithTimeout(url.toString());
+   if (!res.ok) throw new Error(`BinanceData ${symbol}: ${res.status}`);
+   return mapBinanceKlines((await res.json()) as unknown[]);
+ }
+@@ -50,7 +65,7 @@ async function fetchBybit(
+   url.searchParams.set("symbol", symbol.replace("/", ""));
+   url.searchParams.set("interval", intervalMap[interval] || "60");
+   url.searchParams.set("limit", String(limit));
+-  const res = await fetch(url.toString(), { cache: "no-store" });
++  const res = await fetchWithTimeout(url.toString());
+   if (!res.ok) throw new Error(`Bybit ${symbol}: ${res.status}`);
+   const data = (await res.json()) as {
+     retCode: number;
+diff --git a/src/lib/deadline.ts b/src/lib/deadline.ts
+new file mode 100644
+index 0000000..f9b53fa
+--- /dev/null
++++ b/src/lib/deadline.ts
+@@ -0,0 +1,14 @@
++/**
++ * Suit le temps restant sur TOUTE une requête (pas juste un appel), pour
++ * éviter que plusieurs timeouts individuels (25s + 20s + ...) cumulés sur
++ * plusieurs paires ne dépassent la limite serverless (Vercel maxDuration).
++ */
++export function makeDeadline(totalBudgetMs: number) {
++  const start = Date.now();
++  return {
++    remainingMs: () => Math.max(0, totalBudgetMs - (Date.now() - start)),
++    expired: () => Date.now() - start >= totalBudgetMs,
++  };
++}
++
++export type Deadline = ReturnType<typeof makeDeadline>;
+diff --git a/src/lib/demo/derivAuth.ts b/src/lib/demo/derivAuth.ts
+index cc22199..c08462b 100644
+--- a/src/lib/demo/derivAuth.ts
++++ b/src/lib/demo/derivAuth.ts
+@@ -42,6 +42,21 @@ function requireRedirectUri(): string {
+  * Étape 1 : génère state + PKCE, stocke le verifier (clé = state) et
+  * renvoie l'URL d'autorisation Deriv vers laquelle rediriger l'utilisateur.
+  */
++async function fetchWithTimeout(url: string, init: RequestInit, ms = 10_000): Promise<Response> {
++  const controller = new AbortController();
++  const timer = setTimeout(() => controller.abort(), ms);
++  try {
++    return await fetch(url, { ...init, signal: controller.signal });
++  } catch (err) {
++    if (err instanceof Error && err.name === "AbortError") {
++      throw new Error(`Deriv OAuth timeout (${ms / 1000}s) sur ${url}`);
++    }
++    throw err;
++  } finally {
++    clearTimeout(timer);
++  }
++}
++
+ export async function buildAuthorizationUrl(): Promise<string> {
+   const env = getEnv();
+   const redirectUri = requireRedirectUri();
+@@ -101,7 +116,7 @@ export async function handleOauthCallback(
+     code_verifier: entry.codeVerifier,
+   });
+ 
+-  const res = await fetch(TOKEN_URL, {
++  const res = await fetchWithTimeout(TOKEN_URL, {
+     method: "POST",
+     headers: { "Content-Type": "application/x-www-form-urlencoded" },
+     body: body.toString(),
+@@ -140,7 +155,7 @@ async function refreshAccessToken(refreshToken: string): Promise<StoredTokens> {
+     refresh_token: refreshToken,
+   });
+ 
+-  const res = await fetch(TOKEN_URL, {
++  const res = await fetchWithTimeout(TOKEN_URL, {
+     method: "POST",
+     headers: { "Content-Type": "application/x-www-form-urlencoded" },
+     body: body.toString(),
+@@ -201,3 +216,27 @@ export async function hasDerivOauthSession(): Promise<boolean> {
+   const raw = await getMeta(TOKENS_KEY);
+   return Boolean(raw);
+ }
++
++export type DerivOauthStatus = {
++  connected: boolean;
++  expiresAt: number | null;
++  expiresInSeconds: number | null;
++  hasRefreshToken: boolean;
++};
++
++/** Statut détaillé pour l'admin — ne renvoie jamais les tokens eux-mêmes. */
++export async function getDerivOauthStatus(): Promise<DerivOauthStatus> {
++  const raw = await getMeta(TOKENS_KEY);
++  if (!raw) return { connected: false, expiresAt: null, expiresInSeconds: null, hasRefreshToken: false };
++  try {
++    const tokens = JSON.parse(raw) as StoredTokens;
++    return {
++      connected: true,
++      expiresAt: tokens.expiresAt,
++      expiresInSeconds: Math.round((tokens.expiresAt - Date.now()) / 1000),
++      hasRefreshToken: Boolean(tokens.refreshToken),
++    };
++  } catch {
++    return { connected: false, expiresAt: null, expiresInSeconds: null, hasRefreshToken: false };
++  }
++}
+diff --git a/src/lib/demo/derivDemo.ts b/src/lib/demo/derivDemo.ts
+index 39c424f..36fba6d 100644
+--- a/src/lib/demo/derivDemo.ts
++++ b/src/lib/demo/derivDemo.ts
+@@ -114,16 +114,30 @@ async function restCall<T>(
+   const token = await requireToken();
+   const appId = env.derivAppId || "1089";
+ 
+-  const res = await fetch(`${REST_BASE}${path}`, {
+-    method: opts.method || "GET",
+-    headers: {
+-      "Deriv-App-ID": appId,
+-      Authorization: `Bearer ${token}`,
+-      "Content-Type": "application/json",
+-    },
+-    body: opts.body ? JSON.stringify(opts.body) : undefined,
+-    cache: "no-store",
+-  });
++  const controller = new AbortController();
++  const timer = setTimeout(() => controller.abort(), 10_000);
++
++  let res: Response;
++  try {
++    res = await fetch(`${REST_BASE}${path}`, {
++      method: opts.method || "GET",
++      headers: {
++        "Deriv-App-ID": appId,
++        Authorization: `Bearer ${token}`,
++        "Content-Type": "application/json",
++      },
++      body: opts.body ? JSON.stringify(opts.body) : undefined,
++      cache: "no-store",
++      signal: controller.signal,
++    });
++  } catch (err) {
++    if (err instanceof Error && err.name === "AbortError") {
++      throw new Error(`Deriv REST timeout (10s) sur ${path}`);
++    }
++    throw err;
++  } finally {
++    clearTimeout(timer);
++  }
+ 
+   const raw = (await res.json().catch(() => ({}))) as {
+     data?: unknown;
+diff --git a/src/lib/demoExecutor.ts b/src/lib/demoExecutor.ts
+index 484133c..752afdc 100644
+--- a/src/lib/demoExecutor.ts
++++ b/src/lib/demoExecutor.ts
+@@ -14,6 +14,7 @@ import { getMeta, listOpenSignals, setMeta } from "./db";
+ import { resolveSignal } from "./tracker";
+ import { publishAnalysis } from "./telegram";
+ import { getSettings } from "./settings";
++import { renderTemplate } from "./templates";
+ 
+ export type DemoOrderRecord = {
+   signalId: number;
+@@ -169,11 +170,19 @@ export async function syncDemoClosedTrades(opts?: {
+     });
+ 
+     closed += 1;
+-    const line = `TRADE CLOSE #${signal.id} ${rec.symbol} PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USDT (~${rMultiple >= 0 ? "+" : ""}${rMultiple.toFixed(2)}R)`;
+-    details.push(line);
++    const realMode = await isRealTradingActive();
++    const settings = await getSettings();
++    const rendered = renderTemplate(settings.orderClosedTemplate, {
++      realBadge: realMode ? "🔴 RÉEL" : "💰 DEMO",
++      pair: `#${signal.id} ${rec.symbol}`,
++      direction: rec.direction,
++      pnl: `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USDT`,
++      rMultiple: `~${rMultiple >= 0 ? "+" : ""}${rMultiple.toFixed(2)}R`,
++    });
++    details.push(rendered);
+ 
+     if (notify) {
+-      await publishAnalysis(`💰 ${line}`, { dm: true });
++      await publishAnalysis(rendered, { dm: true });
+     }
+   }
+ 
+diff --git a/src/lib/settings.ts b/src/lib/settings.ts
+index c2f3d12..9aef72b 100644
+--- a/src/lib/settings.ts
++++ b/src/lib/settings.ts
+@@ -4,6 +4,9 @@ import {
+   DEFAULT_CRYPTO_TEMPLATE,
+   DEFAULT_V100_TEMPLATE,
+   DEFAULT_XAU_TEMPLATE,
++  DEFAULT_ORDER_OPENED_TEMPLATE,
++  DEFAULT_ORDER_CLOSED_TEMPLATE,
++  DEFAULT_ORDER_ERROR_TEMPLATE,
+ } from "./templates";
+ 
+ /**
+@@ -42,6 +45,9 @@ export type AppSettings = {
+ 
+   // Templates Telegram (tokens {comme_ça} — vide = défaut intégré)
+   cryptoSignalTemplate: string;
++  orderOpenedTemplate: string;
++  orderClosedTemplate: string;
++  orderErrorTemplate: string;
+   xauSignalTemplate: string;
+   v100SignalTemplate: string;
+ };
+@@ -67,6 +73,9 @@ function defaultsFromEnv(): AppSettings {
+     realTradingConfirmed: env.realTradingConfirmed,
+     demoOnePositionPerSymbol: true,
+     cryptoSignalTemplate: DEFAULT_CRYPTO_TEMPLATE,
++    orderOpenedTemplate: DEFAULT_ORDER_OPENED_TEMPLATE,
++    orderClosedTemplate: DEFAULT_ORDER_CLOSED_TEMPLATE,
++    orderErrorTemplate: DEFAULT_ORDER_ERROR_TEMPLATE,
+     xauSignalTemplate: DEFAULT_XAU_TEMPLATE,
+     v100SignalTemplate: DEFAULT_V100_TEMPLATE,
+   };
+@@ -100,6 +109,9 @@ function sanitize(partial: Partial<AppSettings>, base: AppSettings): AppSettings
+   }
+ 
+   if (!next.cryptoSignalTemplate?.trim()) next.cryptoSignalTemplate = DEFAULT_CRYPTO_TEMPLATE;
++  if (!next.orderOpenedTemplate?.trim()) next.orderOpenedTemplate = DEFAULT_ORDER_OPENED_TEMPLATE;
++  if (!next.orderClosedTemplate?.trim()) next.orderClosedTemplate = DEFAULT_ORDER_CLOSED_TEMPLATE;
++  if (!next.orderErrorTemplate?.trim()) next.orderErrorTemplate = DEFAULT_ORDER_ERROR_TEMPLATE;
+   if (!next.xauSignalTemplate?.trim()) next.xauSignalTemplate = DEFAULT_XAU_TEMPLATE;
+   if (!next.v100SignalTemplate?.trim()) next.v100SignalTemplate = DEFAULT_V100_TEMPLATE;
+ 
+diff --git a/src/lib/smc-selector/demoExecutor.ts b/src/lib/smc-selector/demoExecutor.ts
+index 927fd0f..39f0146 100644
+--- a/src/lib/smc-selector/demoExecutor.ts
++++ b/src/lib/smc-selector/demoExecutor.ts
+@@ -9,6 +9,7 @@ import {
+ } from "../demo";
+ import { publishSmcSignal } from "../telegram";
+ import { getSettings } from "../settings";
++import { renderTemplate } from "../templates";
+ import type { ScoredSetup } from "./types";
+ 
+ /**
+@@ -98,10 +99,17 @@ export async function executeDemoForSetup(
+     });
+     await saveOrders(orders);
+ 
+-    return {
+-      ok: true,
+-      detail: `${(await isRealTradingActive()) ? "🔴 RÉEL" : "DEMO"} ${signal.direction} ${pair} qty=${order.qty} @ ${order.entryPrice}`,
+-    };
++    const realMode = await isRealTradingActive();
++    const settings = await getSettings();
++    const rendered = renderTemplate(settings.orderOpenedTemplate, {
++      realBadge: realMode ? "🔴 RÉEL" : "DEMO",
++      direction: signal.direction,
++      pair,
++      qty: String(order.qty),
++      entryPrice: String(order.entryPrice),
++    });
++
++    return { ok: true, detail: rendered };
+   } catch (err) {
+     return {
+       ok: false,
+@@ -121,6 +129,7 @@ export async function syncSelectorDemoClosedTrades(): Promise<{
+ }> {
+   if (!(await demoEnabled())) return { closed: 0, details: [] };
+ 
++  const settings = await getSettings();
+   const orders = await loadOrders();
+   const openOrders = orders.filter((o) => o.status === "open");
+   if (!openOrders.length) return { closed: 0, details: [] };
+@@ -162,12 +171,17 @@ export async function syncSelectorDemoClosedTrades(): Promise<{
+ 
+     closed += 1;
+     const realMode = await isRealTradingActive();
+-    const tag = realMode ? "RÉEL" : "DEMO";
+-    const line = `${tag} CLOSE ${order.pair} ${order.direction} PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD (~${rMultiple >= 0 ? "+" : ""}${rMultiple.toFixed(2)}R)`;
+-    details.push(line);
++    const rendered = renderTemplate(settings.orderClosedTemplate, {
++      realBadge: realMode ? "🔴 RÉEL" : "💰 DEMO",
++      pair: order.pair,
++      direction: order.direction,
++      pnl: `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD`,
++      rMultiple: `~${rMultiple >= 0 ? "+" : ""}${rMultiple.toFixed(2)}R`,
++    });
++    details.push(rendered);
+ 
+     try {
+-      await publishSmcSignal(`${realMode ? "🔴" : "💰"} ${line}`);
++      await publishSmcSignal(rendered);
+     } catch {
+       // recap best-effort — ne bloque pas la synchro des autres trades
+     }
+diff --git a/src/lib/subscribers.ts b/src/lib/subscribers.ts
+index 9c2ee34..5810b8f 100644
+--- a/src/lib/subscribers.ts
++++ b/src/lib/subscribers.ts
+@@ -77,28 +77,51 @@ function isActiveNow(s: Subscriber): boolean {
+   return true;
+ }
+ 
++/** Budget temps dur — bien sous la limite serverless, même en pleine
++ * exécution du cron principal. Au-delà, on s'arrête proprement et on le
++ * signale, plutôt que de risquer un timeout Vercel. */
++const BROADCAST_TIME_BUDGET_MS = 20_000;
++/** Envois simultanés par lot — reste sous le rate-limit agrégé Telegram
++ * (~30 messages/seconde tous chats confondus). */
++const BATCH_SIZE = 20;
++const BATCH_DELAY_MS = 1100;
++
+ export async function broadcastToSubscribers(
+   feed: "crypto" | "smc",
+-  text: string
+-): Promise<{ sent: number; failed: string[] }> {
++  text: string,
++  budgetMs = BROADCAST_TIME_BUDGET_MS
++): Promise<{ sent: number; failed: string[]; skipped: number }> {
+   const list = await listSubscribers();
+   const targets = list.filter(
+     (s) => isActiveNow(s) && (s.feed === feed || s.feed === "both")
+   );
+ 
++  const startedAt = Date.now();
+   let sent = 0;
+   const failed: string[] = [];
+ 
+-  await Promise.all(
+-    targets.map(async (s) => {
+-      try {
+-        await sendMessage(s.chatId, text);
+-        sent++;
+-      } catch {
+-        failed.push(s.label);
+-      }
+-    })
+-  );
++  for (let i = 0; i < targets.length; i += BATCH_SIZE) {
++    if (Date.now() - startedAt > budgetMs) {
++      const skipped = targets.length - i;
++      return { sent, failed, skipped };
++    }
++
++    const batch = targets.slice(i, i + BATCH_SIZE);
++    await Promise.all(
++      batch.map(async (s) => {
++        try {
++          await sendMessage(s.chatId, text);
++          sent++;
++        } catch {
++          failed.push(s.label);
++        }
++      })
++    );
++
++    if (i + BATCH_SIZE < targets.length) {
++      await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
++    }
++  }
+ 
+-  return { sent, failed };
++  return { sent, failed, skipped: 0 };
+ }
+diff --git a/src/lib/telegram.ts b/src/lib/telegram.ts
+index 20ec62f..6b551cf 100644
+--- a/src/lib/telegram.ts
++++ b/src/lib/telegram.ts
+@@ -10,11 +10,26 @@ export type PublishResult = {
+ 
+ export async function tg(method: string, body: Record<string, unknown>) {
+   const { telegramToken } = getEnv();
+-  const res = await fetch(`${API}/bot${telegramToken}/${method}`, {
+-    method: "POST",
+-    headers: { "Content-Type": "application/json" },
+-    body: JSON.stringify(body),
+-  });
++  const controller = new AbortController();
++  const timer = setTimeout(() => controller.abort(), 10_000);
++
++  let res: Response;
++  try {
++    res = await fetch(`${API}/bot${telegramToken}/${method}`, {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify(body),
++      signal: controller.signal,
++    });
++  } catch (err) {
++    if (err instanceof Error && err.name === "AbortError") {
++      throw new Error(`Telegram timeout (10s) sur ${method}`);
++    }
++    throw err;
++  } finally {
++    clearTimeout(timer);
++  }
++
+   const data = (await res.json()) as {
+     ok: boolean;
+     result?: unknown;
+diff --git a/src/lib/templates.ts b/src/lib/templates.ts
+index 29f3d26..abc6a3d 100644
+--- a/src/lib/templates.ts
++++ b/src/lib/templates.ts
+@@ -82,4 +82,15 @@ export const TEMPLATE_TOKENS = {
+     "entryLow", "entryHigh", "stopLoss", "slNote", "tp1", "tp2", "tp3", "rr",
+     "time", "confluence",
+   ],
++  orderOpened: ["realBadge", "direction", "pair", "qty", "entryPrice"],
++  orderClosed: ["realBadge", "pair", "direction", "pnl", "rMultiple"],
++  orderError: ["realBadge", "pair", "detail"],
+ } as const;
++
++export const DEFAULT_ORDER_OPENED_TEMPLATE =
++  "{realBadge} {direction} {pair} qty={qty} @ {entryPrice}";
++
++export const DEFAULT_ORDER_CLOSED_TEMPLATE =
++  "{realBadge} CLOSE {pair} {direction} PnL {pnl} (~{rMultiple})";
++
++export const DEFAULT_ORDER_ERROR_TEMPLATE = "⚠️ {realBadge}: {pair} — {detail}";
+diff --git a/src/lib/tradeHistory.ts b/src/lib/tradeHistory.ts
+index 93d9cc0..fd2347e 100644
+--- a/src/lib/tradeHistory.ts
++++ b/src/lib/tradeHistory.ts
+@@ -13,12 +13,9 @@ export type RealTrade = {
+   openedAt: string;
+   closedAt: string | null;
+   outcome: "TP" | "SL" | "OPEN" | "UNKNOWN";
+-  realizedR: number | null; // crypto: R réel ; smc: null (voir realizedPnl)
++  realizedR: number | null;
+   realizedPnl: number | null;
+-  /** Meilleur prix atteint AVANT la clôture — calculé seulement pour les SL. */
+   mfePrice: number | null;
+-  /** Ce même point converti en multiple de R — "ce que le TP aurait pu
+-   * rapporter si tu l'avais placé exactement là". */
+   mfeR: number | null;
+ };
+ 
+@@ -35,20 +32,20 @@ type SmcOrderRaw = {
+   realizedPnl?: number;
+ };
+ 
+-/**
+- * Combine les VRAIS ordres placés chez Deriv (bot crypto + sélecteur SMC),
+- * pas de simulation. Pour chaque SL touché, va chercher l'historique de
+- * prix réel (API publique Deriv, séparée de la session de trading) pour
+- * calculer le point le plus favorable atteint avant la clôture.
+- */
++const TIME_BUDGET_MS = 45_000;
++const MAX_MFE_PAIRS = 20;
++
+ export async function listRealTradeHistory(days = 30): Promise<RealTrade[]> {
++  const startedAt = Date.now();
+   const trades: RealTrade[] = [];
+ 
+-  // --- Bot crypto : signaux clos + ordre démo réel associé ---
+   const closedSignals = await closedSignalsSince(days);
+-  for (const sig of closedSignals) {
+-    const order = await loadDemoOrder(sig.id);
+-    if (!order) continue; // pas d'ordre réel placé pour ce signal (démo off à l'époque)
++  const cryptoOrders = await Promise.all(
++    closedSignals.map((sig) => loadDemoOrder(sig.id).catch(() => null))
++  );
++  closedSignals.forEach((sig, i) => {
++    const order = cryptoOrders[i];
++    if (!order) return;
+     const outcome: RealTrade["outcome"] =
+       sig.result_r == null ? "UNKNOWN" : sig.result_r > 0 ? "TP" : sig.result_r < 0 ? "SL" : "UNKNOWN";
+     trades.push({
+@@ -67,9 +64,8 @@ export async function listRealTradeHistory(days = 30): Promise<RealTrade[]> {
+       mfePrice: null,
+       mfeR: null,
+     });
+-  }
++  });
+ 
+-  // --- Sélecteur SMC : ordres stockés en base ---
+   const raw = await getMeta("smc_selector_demo_orders_v1");
+   if (raw) {
+     try {
+@@ -105,48 +101,63 @@ export async function listRealTradeHistory(days = 30): Promise<RealTrade[]> {
+       new Date(b.closedAt || b.openedAt).getTime() - new Date(a.closedAt || a.openedAt).getTime()
+   );
+ 
+-  // MFE pour TOUS les SL de la période — par lots pour ne pas ouvrir
+-  // trop de connexions Deriv en simultané.
+-  const slTrades = trades.filter((t) => t.outcome === "SL" && t.stopLoss != null);
+-  const BATCH = 5;
+-  for (let i = 0; i < slTrades.length; i += BATCH) {
+-    const batch = slTrades.slice(i, i + BATCH);
+-    await Promise.all(
+-      batch.map(async (t) => {
+-        try {
+-          const mfe = await computeMfe(t);
+-          t.mfePrice = mfe.price;
+-          t.mfeR = mfe.r;
+-        } catch {
+-          // best-effort — un échec n'affecte pas les autres trades
+-        }
+-      })
+-    );
+-  }
++  await attachMfe(trades, startedAt);
+ 
+   return trades;
+ }
+ 
+-async function computeMfe(t: RealTrade): Promise<{ price: number | null; r: number | null }> {
+-  if (!(t.pair in DERIV_SYMBOLS) || !t.closedAt || t.stopLoss == null) {
+-    return { price: null, r: null };
++/**
++ * Une seule requête Deriv PAR PAIRE (pas une par trade) : on télécharge
++ * la période complète couvrant tous les SL de cette paire, puis on
++ * découpe localement chaque sous-intervalle dans les données déjà en
++ * mémoire. Gros gain de temps quand plusieurs trades SL se suivent sur
++ * la même paire.
++ */
++async function attachMfe(trades: RealTrade[], startedAt: number): Promise<void> {
++  const slTrades = trades.filter(
++    (t) => t.outcome === "SL" && t.stopLoss != null && t.closedAt && t.pair in DERIV_SYMBOLS
++  );
++  if (!slTrades.length) return;
++
++  const byPair = new Map<string, RealTrade[]>();
++  for (const t of slTrades) {
++    if (!byPair.has(t.pair)) byPair.set(t.pair, []);
++    byPair.get(t.pair)!.push(t);
+   }
+-  const from = Math.floor(new Date(t.openedAt).getTime() / 1000);
+-  const to = Math.floor(new Date(t.closedAt).getTime() / 1000) + 60;
+-  if (to <= from) return { price: null, r: null };
+ 
+-  const candles = await fetchDerivCandlesRange(t.pair, "1m", from, to);
+-  if (!candles.length) return { price: null, r: null };
++  let pairsProcessed = 0;
++  for (const [pair, list] of byPair) {
++    if (Date.now() - startedAt > TIME_BUDGET_MS) break;
++    if (pairsProcessed >= MAX_MFE_PAIRS) break;
++    pairsProcessed++;
+ 
+-  const risk = Math.abs(t.entryPrice - t.stopLoss);
+-  if (risk <= 0) return { price: null, r: null };
++    const from = Math.min(...list.map((t) => new Date(t.openedAt).getTime())) / 1000;
++    const to = Math.max(...list.map((t) => new Date(t.closedAt!).getTime())) / 1000 + 60;
+ 
+-  let best = t.direction === "LONG" ? -Infinity : Infinity;
+-  for (const c of candles) {
+-    best = t.direction === "LONG" ? Math.max(best, c.high) : Math.min(best, c.low);
+-  }
+-  if (!Number.isFinite(best)) return { price: null, r: null };
++    try {
++      const candles = await fetchDerivCandlesRange(pair, "1m", Math.floor(from), Math.ceil(to));
++      if (!candles.length) continue;
++
++      for (const t of list) {
++        const tFrom = new Date(t.openedAt).getTime() / 1000;
++        const tTo = new Date(t.closedAt!).getTime() / 1000 + 60;
++        const window = candles.filter((c) => c.openTime / 1000 >= tFrom && c.openTime / 1000 <= tTo);
++        if (!window.length || t.stopLoss == null) continue;
++
++        const risk = Math.abs(t.entryPrice - t.stopLoss);
++        if (risk <= 0) continue;
++
++        let best = t.direction === "LONG" ? -Infinity : Infinity;
++        for (const c of window) {
++          best = t.direction === "LONG" ? Math.max(best, c.high) : Math.min(best, c.low);
++        }
++        if (!Number.isFinite(best)) continue;
+ 
+-  const r = Math.abs(best - t.entryPrice) / risk;
+-  return { price: best, r };
++        t.mfePrice = best;
++        t.mfeR = Math.abs(best - t.entryPrice) / risk;
++      }
++    } catch {
++      // best-effort
++    }
++  }
+ }
+diff --git a/src/lib/withTimeout.ts b/src/lib/withTimeout.ts
+new file mode 100644
+index 0000000..72cd629
+--- /dev/null
++++ b/src/lib/withTimeout.ts
+@@ -0,0 +1,20 @@
++/**
++ * Fait échouer proprement une promesse après `ms` millisecondes, plutôt
++ * que de laisser une route serverless tourner jusqu'à sa limite dure
++ * (Vercel tue alors la fonction sans message d'erreur exploitable).
++ */
++export async function withTimeout<T>(
++  promise: Promise<T>,
++  ms: number,
++  label: string
++): Promise<T> {
++  let timer: ReturnType<typeof setTimeout>;
++  const timeout = new Promise<never>((_, reject) => {
++    timer = setTimeout(() => reject(new Error(`Timeout (${ms / 1000}s) sur ${label}`)), ms);
++  });
++  try {
++    return await Promise.race([promise, timeout]);
++  } finally {
++    clearTimeout(timer!);
++  }
++}

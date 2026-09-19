@@ -38,6 +38,7 @@ export type BacktestResult = {
   avgR: number;
   sumR: number;
   maxDrawdownR: number;
+  truncated: boolean;
 };
 
 let cachedData: Record<string, Record<string, [number, number, number, number, number][]>> | null = null;
@@ -166,7 +167,14 @@ async function runBacktestOnRawCandles(
   const useTp2 = overrides?.useTp2 ?? false;
   const onePositionPerPair = overrides?.onePositionPerPair ?? true;
 
-  const candles = toCandles(raw);
+  // Sécurité serverless : au-delà, on garde seulement les bougies les
+  // plus récentes plutôt que de risquer un timeout Vercel en pleine
+  // requête (arrive surtout en 1m/5m avec beaucoup d'historique en cache).
+  const MAX_CANDLES = 20_000;
+  const allCandles = toCandles(raw);
+  const candles = allCandles.length > MAX_CANDLES ? allCandles.slice(-MAX_CANDLES) : allCandles;
+  const truncated = allCandles.length > MAX_CANDLES;
+
   const WINDOW = overrides?.window ?? 120;
   const trades: BacktestTrade[] = [];
 
@@ -293,6 +301,7 @@ async function runBacktestOnRawCandles(
     avgR,
     sumR,
     maxDrawdownR: maxDD,
+    truncated,
   };
 }
 

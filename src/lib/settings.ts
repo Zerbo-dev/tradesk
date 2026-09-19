@@ -4,6 +4,9 @@ import {
   DEFAULT_CRYPTO_TEMPLATE,
   DEFAULT_V100_TEMPLATE,
   DEFAULT_XAU_TEMPLATE,
+  DEFAULT_ORDER_OPENED_TEMPLATE,
+  DEFAULT_ORDER_CLOSED_TEMPLATE,
+  DEFAULT_ORDER_ERROR_TEMPLATE,
 } from "./templates";
 
 /**
@@ -42,6 +45,9 @@ export type AppSettings = {
 
   // Templates Telegram (tokens {comme_ça} — vide = défaut intégré)
   cryptoSignalTemplate: string;
+  orderOpenedTemplate: string;
+  orderClosedTemplate: string;
+  orderErrorTemplate: string;
   xauSignalTemplate: string;
   v100SignalTemplate: string;
 };
@@ -67,6 +73,9 @@ function defaultsFromEnv(): AppSettings {
     realTradingConfirmed: env.realTradingConfirmed,
     demoOnePositionPerSymbol: true,
     cryptoSignalTemplate: DEFAULT_CRYPTO_TEMPLATE,
+    orderOpenedTemplate: DEFAULT_ORDER_OPENED_TEMPLATE,
+    orderClosedTemplate: DEFAULT_ORDER_CLOSED_TEMPLATE,
+    orderErrorTemplate: DEFAULT_ORDER_ERROR_TEMPLATE,
     xauSignalTemplate: DEFAULT_XAU_TEMPLATE,
     v100SignalTemplate: DEFAULT_V100_TEMPLATE,
   };
@@ -100,6 +109,9 @@ function sanitize(partial: Partial<AppSettings>, base: AppSettings): AppSettings
   }
 
   if (!next.cryptoSignalTemplate?.trim()) next.cryptoSignalTemplate = DEFAULT_CRYPTO_TEMPLATE;
+  if (!next.orderOpenedTemplate?.trim()) next.orderOpenedTemplate = DEFAULT_ORDER_OPENED_TEMPLATE;
+  if (!next.orderClosedTemplate?.trim()) next.orderClosedTemplate = DEFAULT_ORDER_CLOSED_TEMPLATE;
+  if (!next.orderErrorTemplate?.trim()) next.orderErrorTemplate = DEFAULT_ORDER_ERROR_TEMPLATE;
   if (!next.xauSignalTemplate?.trim()) next.xauSignalTemplate = DEFAULT_XAU_TEMPLATE;
   if (!next.v100SignalTemplate?.trim()) next.v100SignalTemplate = DEFAULT_V100_TEMPLATE;
 

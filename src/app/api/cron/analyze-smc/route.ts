@@ -39,7 +39,7 @@ async function run(force = false) {
     try {
       const text = await formatSmcSignal(signal);
       const pub = await publishSmcSignal(text);
-      broadcastToSubscribers("smc", text).catch(() => {});
+      await broadcastToSubscribers("smc", text).catch(() => ({ sent: 0, failed: [], skipped: 0 }));
       if (pub.errors.length) {
         publishErrors.push(...pub.errors.map((e) => `${signal.pair}: ${e}`));
       }

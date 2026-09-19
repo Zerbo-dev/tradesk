@@ -14,6 +14,7 @@ import { getMeta, listOpenSignals, setMeta } from "./db";
 import { resolveSignal } from "./tracker";
 import { publishAnalysis } from "./telegram";
 import { getSettings } from "./settings";
+import { renderTemplate } from "./templates";
 
 export type DemoOrderRecord = {
   signalId: number;
@@ -169,11 +170,19 @@ export async function syncDemoClosedTrades(opts?: {
     });
 
     closed += 1;
-    const line = `TRADE CLOSE #${signal.id} ${rec.symbol} PnL ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USDT (~${rMultiple >= 0 ? "+" : ""}${rMultiple.toFixed(2)}R)`;
-    details.push(line);
+    const realMode = await isRealTradingActive();
+    const settings = await getSettings();
+    const rendered = renderTemplate(settings.orderClosedTemplate, {
+      realBadge: realMode ? "🔴 RÉEL" : "💰 DEMO",
+      pair: `#${signal.id} ${rec.symbol}`,
+      direction: rec.direction,
+      pnl: `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USDT`,
+      rMultiple: `~${rMultiple >= 0 ? "+" : ""}${rMultiple.toFixed(2)}R`,
+    });
+    details.push(rendered);
 
     if (notify) {
-      await publishAnalysis(`💰 ${line}`, { dm: true });
+      await publishAnalysis(rendered, { dm: true });
     }
   }
 

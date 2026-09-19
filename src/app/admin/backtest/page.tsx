@@ -19,6 +19,7 @@ type Result = {
   avgR: number;
   sumR: number;
   maxDrawdownR: number;
+  truncated: boolean;
 };
 
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
@@ -328,6 +329,13 @@ export default function BacktestPage() {
       {result && (
         <section className="card">
           <h2 className="card-title">{result.pair} · {result.timeframe} · {result.bars} bougies</h2>
+          {result.truncated && (
+            <p className="toast toast-err" style={{ marginBottom: 10 }}>
+              ⚠️ Historique tronqué aux bougies les plus récentes (trop de données pour un
+              seul calcul) — réduis la période téléchargée ou choisis un timeframe plus large
+              pour un résultat complet.
+            </p>
+          )}
           <div className="stat-line"><span>Trades clos (total)</span><b>{result.totalClosedTrades}</b></div>
           <div className="stat-line">
             <span>Winrate</span>

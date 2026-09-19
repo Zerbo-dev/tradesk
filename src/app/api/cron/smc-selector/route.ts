@@ -9,6 +9,8 @@ import {
 import { formatSmcSignal } from "@/lib/smc/format";
 import { publishSmcSignal } from "@/lib/telegram";
 import { broadcastToSubscribers } from "@/lib/subscribers";
+import { withTimeout } from "@/lib/withTimeout";
+import { notifyAdminsThrottled } from "@/lib/admins";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -46,7 +48,7 @@ async function run() {
     try {
       const text = await formatSmcSignal(setup.signal);
       const pub = await publishSmcSignal(text);
-      broadcastToSubscribers("smc", text).catch(() => {});
+      await broadcastToSubscribers("smc", text).catch(() => ({ sent: 0, failed: [], skipped: 0 }));
       if (pub.errors.length) {
         publishErrors.push(...pub.errors.map((e) => `${setup.pair}: ${e}`));
       }
@@ -63,12 +65,21 @@ async function run() {
     //    signal — le canal doit recevoir le signal même si le trade démo
     //    échoue).
     try {
-      const demo = await executeDemoForSetup(setup);
+      const demo = await withTimeout(
+        executeDemoForSetup(setup),
+        25_000,
+        `exécution démo ${setup.pair}`
+      );
       demoResults.push(`${setup.pair}: ${demo.detail}`);
     } catch (err) {
-      demoResults.push(
-        `${setup.pair}: erreur démo ${err instanceof Error ? err.message : "inconnue"}`
-      );
+      const msg = err instanceof Error ? err.message : "inconnue";
+      demoResults.push(`${setup.pair}: erreur démo ${msg}`);
+      if (/timeout|oauth|token|refresh_token|invalid/i.test(msg)) {
+        await notifyAdminsThrottled(
+          "deriv_exec_error",
+          `🔴 Problème d'exécution Deriv (${setup.pair})\n${msg}\n\nVérifie /admin (Zone réelle / reconnexion) — les signaux continuent d'être publiés mais aucun ordre n'est passé tant que ce n'est pas résolu.`
+        ).catch(() => {});
+      }
     }
   }
 

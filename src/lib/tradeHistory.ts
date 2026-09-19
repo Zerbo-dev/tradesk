@@ -13,12 +13,9 @@ export type RealTrade = {
   openedAt: string;
   closedAt: string | null;
   outcome: "TP" | "SL" | "OPEN" | "UNKNOWN";
-  realizedR: number | null; // crypto: R réel ; smc: null (voir realizedPnl)
+  realizedR: number | null;
   realizedPnl: number | null;
-  /** Meilleur prix atteint AVANT la clôture — calculé seulement pour les SL. */
   mfePrice: number | null;
-  /** Ce même point converti en multiple de R — "ce que le TP aurait pu
-   * rapporter si tu l'avais placé exactement là". */
   mfeR: number | null;
 };
 
@@ -35,20 +32,20 @@ type SmcOrderRaw = {
   realizedPnl?: number;
 };
 
-/**
- * Combine les VRAIS ordres placés chez Deriv (bot crypto + sélecteur SMC),
- * pas de simulation. Pour chaque SL touché, va chercher l'historique de
- * prix réel (API publique Deriv, séparée de la session de trading) pour
- * calculer le point le plus favorable atteint avant la clôture.
- */
+const TIME_BUDGET_MS = 45_000;
+const MAX_MFE_PAIRS = 20;
+
 export async function listRealTradeHistory(days = 30): Promise<RealTrade[]> {
+  const startedAt = Date.now();
   const trades: RealTrade[] = [];
 
-  // --- Bot crypto : signaux clos + ordre démo réel associé ---
   const closedSignals = await closedSignalsSince(days);
-  for (const sig of closedSignals) {
-    const order = await loadDemoOrder(sig.id);
-    if (!order) continue; // pas d'ordre réel placé pour ce signal (démo off à l'époque)
+  const cryptoOrders = await Promise.all(
+    closedSignals.map((sig) => loadDemoOrder(sig.id).catch(() => null))
+  );
+  closedSignals.forEach((sig, i) => {
+    const order = cryptoOrders[i];
+    if (!order) return;
     const outcome: RealTrade["outcome"] =
       sig.result_r == null ? "UNKNOWN" : sig.result_r > 0 ? "TP" : sig.result_r < 0 ? "SL" : "UNKNOWN";
     trades.push({
@@ -67,9 +64,8 @@ export async function listRealTradeHistory(days = 30): Promise<RealTrade[]> {
       mfePrice: null,
       mfeR: null,
     });
-  }
+  });
 
-  // --- Sélecteur SMC : ordres stockés en base ---
   const raw = await getMeta("smc_selector_demo_orders_v1");
   if (raw) {
     try {
@@ -105,48 +101,63 @@ export async function listRealTradeHistory(days = 30): Promise<RealTrade[]> {
       new Date(b.closedAt || b.openedAt).getTime() - new Date(a.closedAt || a.openedAt).getTime()
   );
 
-  // MFE pour TOUS les SL de la période — par lots pour ne pas ouvrir
-  // trop de connexions Deriv en simultané.
-  const slTrades = trades.filter((t) => t.outcome === "SL" && t.stopLoss != null);
-  const BATCH = 5;
-  for (let i = 0; i < slTrades.length; i += BATCH) {
-    const batch = slTrades.slice(i, i + BATCH);
-    await Promise.all(
-      batch.map(async (t) => {
-        try {
-          const mfe = await computeMfe(t);
-          t.mfePrice = mfe.price;
-          t.mfeR = mfe.r;
-        } catch {
-          // best-effort — un échec n'affecte pas les autres trades
-        }
-      })
-    );
-  }
+  await attachMfe(trades, startedAt);
 
   return trades;
 }
 
-async function computeMfe(t: RealTrade): Promise<{ price: number | null; r: number | null }> {
-  if (!(t.pair in DERIV_SYMBOLS) || !t.closedAt || t.stopLoss == null) {
-    return { price: null, r: null };
+/**
+ * Une seule requête Deriv PAR PAIRE (pas une par trade) : on télécharge
+ * la période complète couvrant tous les SL de cette paire, puis on
+ * découpe localement chaque sous-intervalle dans les données déjà en
+ * mémoire. Gros gain de temps quand plusieurs trades SL se suivent sur
+ * la même paire.
+ */
+async function attachMfe(trades: RealTrade[], startedAt: number): Promise<void> {
+  const slTrades = trades.filter(
+    (t) => t.outcome === "SL" && t.stopLoss != null && t.closedAt && t.pair in DERIV_SYMBOLS
+  );
+  if (!slTrades.length) return;
+
+  const byPair = new Map<string, RealTrade[]>();
+  for (const t of slTrades) {
+    if (!byPair.has(t.pair)) byPair.set(t.pair, []);
+    byPair.get(t.pair)!.push(t);
   }
-  const from = Math.floor(new Date(t.openedAt).getTime() / 1000);
-  const to = Math.floor(new Date(t.closedAt).getTime() / 1000) + 60;
-  if (to <= from) return { price: null, r: null };
 
-  const candles = await fetchDerivCandlesRange(t.pair, "1m", from, to);
-  if (!candles.length) return { price: null, r: null };
+  let pairsProcessed = 0;
+  for (const [pair, list] of byPair) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) break;
+    if (pairsProcessed >= MAX_MFE_PAIRS) break;
+    pairsProcessed++;
 
-  const risk = Math.abs(t.entryPrice - t.stopLoss);
-  if (risk <= 0) return { price: null, r: null };
+    const from = Math.min(...list.map((t) => new Date(t.openedAt).getTime())) / 1000;
+    const to = Math.max(...list.map((t) => new Date(t.closedAt!).getTime())) / 1000 + 60;
 
-  let best = t.direction === "LONG" ? -Infinity : Infinity;
-  for (const c of candles) {
-    best = t.direction === "LONG" ? Math.max(best, c.high) : Math.min(best, c.low);
+    try {
+      const candles = await fetchDerivCandlesRange(pair, "1m", Math.floor(from), Math.ceil(to));
+      if (!candles.length) continue;
+
+      for (const t of list) {
+        const tFrom = new Date(t.openedAt).getTime() / 1000;
+        const tTo = new Date(t.closedAt!).getTime() / 1000 + 60;
+        const window = candles.filter((c) => c.openTime / 1000 >= tFrom && c.openTime / 1000 <= tTo);
+        if (!window.length || t.stopLoss == null) continue;
+
+        const risk = Math.abs(t.entryPrice - t.stopLoss);
+        if (risk <= 0) continue;
+
+        let best = t.direction === "LONG" ? -Infinity : Infinity;
+        for (const c of window) {
+          best = t.direction === "LONG" ? Math.max(best, c.high) : Math.min(best, c.low);
+        }
+        if (!Number.isFinite(best)) continue;
+
+        t.mfePrice = best;
+        t.mfeR = Math.abs(best - t.entryPrice) / risk;
+      }
+    } catch {
+      // best-effort
+    }
   }
-  if (!Number.isFinite(best)) return { price: null, r: null };
-
-  const r = Math.abs(best - t.entryPrice) / risk;
-  return { price: best, r };
 }

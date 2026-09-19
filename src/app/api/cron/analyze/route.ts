@@ -3,6 +3,10 @@ import { getEnv } from "@/lib/env";
 import { getSettings } from "@/lib/settings";
 import { runAllAnalyses } from "@/lib/analysis";
 import { formatAnalysis } from "@/lib/format";
+import { renderTemplate } from "@/lib/templates";
+import { withTimeout } from "@/lib/withTimeout";
+import { makeDeadline } from "@/lib/deadline";
+import { notifyAdminsThrottled } from "@/lib/admins";
 import { broadcastToSubscribers } from "@/lib/subscribers";
 import { publishAnalysis } from "@/lib/telegram";
 import { setMeta, updateSignal } from "@/lib/db";
@@ -28,6 +32,9 @@ async function run(force = false) {
   const env = getEnv();
   const settings = await getSettings();
   const demoActive = await demoEnabled();
+  // Marge de 15s sous maxDuration=60s pour le reste du travail (fetch
+  // prix, DB, formatage...). Partagé entre TOUTES les paires de ce tick.
+  const deadline = makeDeadline(45_000);
 
   // 1) Sync clôtures compte démo (si activé)
   const demoSync = demoActive
@@ -63,27 +70,61 @@ async function run(force = false) {
 
       // 3b) Exécution démo/réelle sur LONG/SHORT
       if (demoActive && (a.direction === "LONG" || a.direction === "SHORT")) {
+        if (deadline.expired()) {
+          text += "\n\n⚠️ Budget temps épuisé pour ce tick — exécution démo reportée au prochain cron.";
+        } else {
         try {
-          const demo = await executeDemoForAnalysis(a);
+          const demo = await withTimeout(
+            executeDemoForAnalysis(a),
+            Math.min(20_000, deadline.remainingMs()),
+            `exécution démo ${a.pair}`
+          );
           const realMode = await isRealTradingActive();
-          if (demo.ok) {
+          const realBadge = realMode ? "🔴 ORDRE RÉEL" : "💰 DEMO";
+          if (demo.ok && demo.order) {
             demoOrders.push(demo.detail);
-            text += realMode
-              ? `\n\n🔴 ORDRE RÉEL (argent véritable)\n${demo.detail}`
-              : `\n\n💰 TRADE ORDER\n${demo.detail}`;
+            const rendered = renderTemplate(settings.orderOpenedTemplate, {
+              realBadge,
+              direction: a.direction,
+              pair: demo.order.symbol,
+              qty: String(demo.order.qty),
+              entryPrice: String(demo.order.entryPrice),
+            });
+            text += `\n\n${rendered}`;
           } else if (demo.detail !== "demo off" && demo.detail !== "neutral skip") {
             demoOrders.push(`${a.pair}: ${demo.detail}`);
-            text += realMode ? `\n\n⚠️ RÉEL: ${demo.detail}` : `\n\n⚠️ DEMO: ${demo.detail}`;
+            const rendered = renderTemplate(settings.orderErrorTemplate, {
+              realBadge: realMode ? "RÉEL" : "DEMO",
+              pair: a.pair,
+              detail: demo.detail,
+            });
+            text += `\n\n${rendered}`;
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : "demo error";
           demoOrders.push(`${a.pair}: ${msg}`);
           text += `\n\n⚠️ TRADE ERROR: ${msg}`;
+
+          const isAuthOrTimeout =
+            /timeout|oauth|token|refresh_token|invalid/i.test(msg);
+          if (isAuthOrTimeout) {
+            await notifyAdminsThrottled(
+              "deriv_exec_error",
+              `🔴 Problème d'exécution Deriv (${a.pair})\n${msg}\n\nVérifie /admin (Zone réelle / reconnexion) — les signaux continuent d'être publiés mais aucun ordre n'est passé tant que ce n'est pas résolu.`
+            ).catch(() => {});
+          }
+        }
         }
       }
 
       const pub = await publishAnalysis(text, { dm: true });
-      broadcastToSubscribers("crypto", text).catch(() => {});
+      if (!deadline.expired()) {
+        await broadcastToSubscribers(
+          "crypto",
+          text,
+          Math.min(15_000, deadline.remainingMs())
+        ).catch(() => ({ sent: 0, failed: [], skipped: 0 }));
+      }
       if (pub.errors.length) errors.push(...pub.errors.map((e) => `${a.pair}: ${e}`));
       if (pub.delivered && a.signalId) {
         if (pub.channelMessageId) {

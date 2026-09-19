@@ -82,4 +82,15 @@ export const TEMPLATE_TOKENS = {
     "entryLow", "entryHigh", "stopLoss", "slNote", "tp1", "tp2", "tp3", "rr",
     "time", "confluence",
   ],
+  orderOpened: ["realBadge", "direction", "pair", "qty", "entryPrice"],
+  orderClosed: ["realBadge", "pair", "direction", "pnl", "rMultiple"],
+  orderError: ["realBadge", "pair", "detail"],
 } as const;
+
+export const DEFAULT_ORDER_OPENED_TEMPLATE =
+  "{realBadge} {direction} {pair} qty={qty} @ {entryPrice}";
+
+export const DEFAULT_ORDER_CLOSED_TEMPLATE =
+  "{realBadge} CLOSE {pair} {direction} PnL {pnl} (~{rMultiple})";
+
+export const DEFAULT_ORDER_ERROR_TEMPLATE = "⚠️ {realBadge}: {pair} — {detail}";

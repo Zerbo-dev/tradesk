@@ -10,11 +10,26 @@ export type PublishResult = {
 
 export async function tg(method: string, body: Record<string, unknown>) {
   const { telegramToken } = getEnv();
-  const res = await fetch(`${API}/bot${telegramToken}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+
+  let res: Response;
+  try {
+    res = await fetch(`${API}/bot${telegramToken}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(`Telegram timeout (10s) sur ${method}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
   const data = (await res.json()) as {
     ok: boolean;
     result?: unknown;

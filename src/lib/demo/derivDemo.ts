@@ -114,16 +114,30 @@ async function restCall<T>(
   const token = await requireToken();
   const appId = env.derivAppId || "1089";
 
-  const res = await fetch(`${REST_BASE}${path}`, {
-    method: opts.method || "GET",
-    headers: {
-      "Deriv-App-ID": appId,
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-    cache: "no-store",
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+
+  let res: Response;
+  try {
+    res = await fetch(`${REST_BASE}${path}`, {
+      method: opts.method || "GET",
+      headers: {
+        "Deriv-App-ID": appId,
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(`Deriv REST timeout (10s) sur ${path}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   const raw = (await res.json().catch(() => ({}))) as {
     data?: unknown;

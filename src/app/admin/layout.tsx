@@ -9,8 +9,10 @@ const NAV = [
   { href: "/admin/learning", label: "🧠 Apprentissage" },
   { href: "/admin/templates", label: "✉️ Templates" },
   { href: "/admin/subscribers", label: "👥 Abonnés" },
+  { href: "/admin/broadcast", label: "📢 Broadcast" },
   { href: "/admin/backtest", label: "🧪 Backtest" },
   { href: "/admin/history", label: "📜 Historique réel" },
+  { href: "/admin/team", label: "🔑 Équipe & connexions" },
   { href: "/admin/danger", label: "🔴 Zone réelle" },
 ];
 
