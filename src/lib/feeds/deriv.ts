@@ -8,7 +8,6 @@ export const DERIV_SYMBOLS = {
   V100: "R_100",
   BTCUSDT: "cryBTCUSD",
   ETHUSDT: "cryETHUSD",
-  SOLUSDT: "crySOLUSD",
 } as const;
 
 export type DerivPair = keyof typeof DERIV_SYMBOLS;
