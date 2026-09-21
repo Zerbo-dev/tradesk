@@ -126,9 +126,16 @@ export async function fetchDerivCandles(
       }
     });
 
-    ws.addEventListener("error", () => {
-      finish(new Error(`Deriv WS error ${symbol}`));
-    });
+    ws.addEventListener("error", (event: any) => {
+  console.error("RAW WS ERROR:", event?.message, event?.error, event);
+  finish(new Error(`Deriv WS error ${symbol}: ${event?.message ?? "unknown"}`));
+});
+ws.addEventListener("message", (event) => {
+  const data = JSON.parse(event.data);
+  if (data.error) {
+    console.error("DERIV API ERROR:", data.error);
+  }
+});
   });
 }
 
