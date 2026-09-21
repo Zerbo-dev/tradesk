@@ -226,3 +226,6 @@ function fetchOneRange(
     ws.addEventListener("error", () => finish(new Error(`Deriv WS error ${symbol}`)));
   });
 }
+ws.addEventListener("close", (event) => {
+  console.error("WS CLOSE:", event.code, event.reason);
+});
