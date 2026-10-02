@@ -46,19 +46,70 @@ function toCandles(raw: DerivCandle[]): Candle[] {
   }));
 }
 
-/**
- * Fetch OHLC candles from Deriv (WebSocket, free, no API key).
- * Works for forex (frxXAUUSD) and synthetics (R_100 = V100).
- */
-export async function fetchDerivCandles(
+async function fetchDerivCandlesRest(
   pair: DerivPair | string,
   timeframe: string,
   count = 200,
   timeoutMs = 12_000
 ): Promise<Candle[]> {
-  const symbol =
-    DERIV_SYMBOLS[pair as DerivPair] ||
-    String(pair).trim();
+  const symbol = DERIV_SYMBOLS[pair as DerivPair] || String(pair).trim();
+  const granularity = GRANULARITY[timeframe];
+  if (!granularity) {
+    throw new Error(`Deriv TF non supporté: ${timeframe}`);
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const url = new URL("https://api.deriv.com/api/v3");
+    url.searchParams.set("ticks_history", symbol);
+    url.searchParams.set("granularity", String(granularity));
+    url.searchParams.set("count", String(count));
+    url.searchParams.set("end", "latest");
+    url.searchParams.set("style", "candles");
+
+    const res = await fetch(url.toString(), {
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json" },
+    });
+
+    if (!res.ok) {
+      throw new Error(`Deriv REST ${res.status} ${symbol}`);
+    }
+
+    const data = (await res.json()) as {
+      candles?: DerivCandle[];
+      error?: { message?: string; code?: string };
+    };
+
+    if (data.error) {
+      throw new Error(
+        `Deriv ${symbol}: ${data.error.message || data.error.code || "error"}`
+      );
+    }
+
+    if (!data.candles || data.candles.length === 0) {
+      throw new Error(`Deriv ${symbol}: aucune bougie`);
+    }
+
+    return toCandles(data.candles);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Fetch OHLC candles from Deriv (WebSocket, free, no API key).
+ * Works for forex (frxXAUUSD) and synthetics (R_100 = V100).
+ */
+async function fetchDerivCandlesWs(
+  pair: DerivPair | string,
+  timeframe: string,
+  count = 200,
+  timeoutMs = 12_000
+): Promise<Candle[]> {
+  const symbol = DERIV_SYMBOLS[pair as DerivPair] || String(pair).trim();
   const granularity = GRANULARITY[timeframe];
   if (!granularity) {
     throw new Error(`Deriv TF non supporté: ${timeframe}`);
@@ -75,7 +126,7 @@ export async function fetchDerivCandles(
       try {
         ws.close();
       } catch {
-        /* ignore */
+        // ignore
       }
       if (err) reject(err);
       else resolve(candles || []);
@@ -132,6 +183,23 @@ export async function fetchDerivCandles(
   });
 }
 
+export async function fetchDerivCandles(
+  pair: DerivPair | string,
+  timeframe: string,
+  count = 200,
+  timeoutMs = 12_000
+): Promise<Candle[]> {
+  try {
+    if (typeof WebSocket !== "undefined") {
+      return await fetchDerivCandlesWs(pair, timeframe, count, timeoutMs);
+    }
+  } catch (err) {
+    // fallback REST when WS fails or is blocked
+  }
+
+  return fetchDerivCandlesRest(pair, timeframe, count, timeoutMs);
+}
+
 /**
  * Historique profond, paginé (Deriv limite ~5000 bougies/requête via
  * `ticks_history` avec start/end). Utilisé UNIQUEMENT par le backtest —
@@ -179,7 +247,7 @@ function fetchOneRange(
       try {
         ws.close();
       } catch {
-        /* ignore */
+        // ignore
       }
       if (err) reject(err);
       else resolve(candles || []);
