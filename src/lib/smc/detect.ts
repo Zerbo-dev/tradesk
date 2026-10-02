@@ -66,6 +66,29 @@ export function detectFvgs(candles: Candle[], lookback = 40): Zone[] {
   return out;
 }
 
+function average(values: number[]): number {
+  if (!values.length) return 0;
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+/** Fallback trend bias when structure swings are too weak or absent. */
+export function trendBias(candles: Candle[], short = 8, long = 20): Direction | null {
+  if (candles.length < long + 1) return null;
+
+  const recent = candles.slice(-short).map((c) => c.close);
+  const prior = candles.slice(-(short + long), -short).map((c) => c.close);
+  if (!prior.length) return null;
+
+  const recentAvg = average(recent);
+  const priorAvg = average(prior);
+  const delta = recentAvg - priorAvg;
+  const threshold = Math.max(0.2, Math.abs(priorAvg) * 0.0004);
+
+  if (delta > threshold) return "BUY";
+  if (delta < -threshold) return "SELL";
+  return null;
+}
+
 /** Last unfilled FVG still near price (not fully traded through) */
 export function latestValidFvg(
   candles: Candle[],
@@ -123,7 +146,7 @@ export function findSwings(candles: Candle[], left = 3, right = 3): Swing[] {
 
 /**
  * Market structure bias from recent swing highs/lows.
- * Fallback: close vs SMA20.
+ * Fallback: close vs SMA20, then price trend average.
  */
 export function structureBias(candles: Candle[]): Direction | null {
   const swings = findSwings(candles, 2, 2);
@@ -141,13 +164,14 @@ export function structureBias(candles: Candle[]): Direction | null {
 
   const closes = candles.map((c) => c.close);
   const n = 20;
-  if (closes.length < n + 1) return null;
-  const sma =
-    closes.slice(-n).reduce((a, b) => a + b, 0) / n;
-  const price = closes[closes.length - 1];
-  if (price > sma * 1.0005) return "BUY";
-  if (price < sma * 0.9995) return "SELL";
-  return null;
+  if (closes.length >= n + 1) {
+    const sma = closes.slice(-n).reduce((a, b) => a + b, 0) / n;
+    const price = closes[closes.length - 1];
+    if (price > sma * 1.0005) return "BUY";
+    if (price < sma * 0.9995) return "SELL";
+  }
+
+  return trendBias(candles, 8, 20);
 }
 
 /**
