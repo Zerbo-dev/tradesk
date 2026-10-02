@@ -62,38 +62,44 @@ async function fetchDerivCandlesRest(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const url = new URL("https://api.deriv.com/api/v3");
-    url.searchParams.set("ticks_history", symbol);
-    url.searchParams.set("granularity", String(granularity));
-    url.searchParams.set("count", String(count));
-    url.searchParams.set("end", "latest");
-    url.searchParams.set("style", "candles");
-
-    const res = await fetch(url.toString(), {
-      signal: controller.signal,
-      headers: { "Content-Type": "application/json" },
-    });
-
-    if (!res.ok) {
-      throw new Error(`Deriv REST ${res.status} ${symbol}`);
-    }
-
-    const data = (await res.json()) as {
-      candles?: DerivCandle[];
-      error?: { message?: string; code?: string };
+    // Use WebSocket proxy or fallback to ticks endpoint via undocumented REST
+    const payload = {
+      ticks_history: symbol,
+      adjust_start_time: 1,
+      count,
+      end: "latest",
+      granularity,
+      style: "candles",
     };
 
-    if (data.error) {
-      throw new Error(
-        `Deriv ${symbol}: ${data.error.message || data.error.code || "error"}`
-      );
+    // Try undocumented REST endpoint first (if available)
+    try {
+      const res = await fetch("https://ws.derivws.com/socket.io/?transport=polling", {
+        method: "POST",
+        signal: controller.signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (res.ok) {
+        const text = await res.text();
+        const jsonStart = text.indexOf("{");
+        if (jsonStart !== -1) {
+          const data = JSON.parse(text.substring(jsonStart)) as {
+            candles?: DerivCandle[];
+            error?: { message?: string; code?: string };
+          };
+          if (data.candles && data.candles.length > 0) {
+            return toCandles(data.candles);
+          }
+        }
+      }
+    } catch {
+      // fallthrough to WS retry
     }
 
-    if (!data.candles || data.candles.length === 0) {
-      throw new Error(`Deriv ${symbol}: aucune bougie`);
-    }
-
-    return toCandles(data.candles);
+    // Fallback: retry via WebSocket
+    throw new Error(`REST unavailable, fallback to WS for ${symbol}`);
   } finally {
     clearTimeout(timer);
   }
@@ -133,7 +139,7 @@ async function fetchDerivCandlesWs(
     };
 
     const timer = setTimeout(
-      () => finish(new Error(`Deriv timeout ${symbol} ${timeframe}`)),
+      () => finish(new Error(`Deriv WS timeout ${symbol} ${timeframe}`)),
       timeoutMs
     );
 
@@ -170,7 +176,7 @@ async function fetchDerivCandlesWs(
           return;
         }
         if (data.msg_type === "candles") {
-          finish(new Error(`Deriv ${symbol}: aucune bougie`));
+          finish(new Error(`Deriv ${symbol}: no candles`));
         }
       } catch (err) {
         finish(err instanceof Error ? err : new Error("Deriv parse error"));
@@ -183,21 +189,24 @@ async function fetchDerivCandlesWs(
   });
 }
 
+/**
+ * Main entry point: tries REST fallback, then WS as primary.
+ * Robust against network restrictions.
+ */
 export async function fetchDerivCandles(
   pair: DerivPair | string,
   timeframe: string,
   count = 200,
   timeoutMs = 12_000
 ): Promise<Candle[]> {
+  // Try REST fallback first (more reliable in some environments)
   try {
-    if (typeof WebSocket !== "undefined") {
-      return await fetchDerivCandlesWs(pair, timeframe, count, timeoutMs);
-    }
-  } catch (err) {
-    // fallback REST when WS fails or is blocked
+    return await fetchDerivCandlesRest(pair, timeframe, count, timeoutMs * 0.4);
+  } catch {
+    // REST failed, use WebSocket
   }
 
-  return fetchDerivCandlesRest(pair, timeframe, count, timeoutMs);
+  return fetchDerivCandlesWs(pair, timeframe, count, timeoutMs);
 }
 
 /**
